@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dataDocument xmlns="http://www.fpml.org/FpML-5/confirmation" fpmlVersion="5-11">
+  <trade>
+    <tradeHeader>
+      <partyTradeIdentifier>
+        <tradeId>NOVALUEDATE1</tradeId>
+      </partyTradeIdentifier>
+      <tradeDate>2024-06-01</tradeDate>
+    </tradeHeader>
+    <fxForward>
+      <exchangedCurrency1>
+        <paymentAmount>
+          <currency>USD</currency>
+          <amount>1000000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency1>
+      <exchangedCurrency2>
+        <paymentAmount>
+          <currency>CAD</currency>
+          <amount>1360000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency2>
+      <exchangeRate>
+        <rate>1.36</rate>
+      </exchangeRate>
+    </fxForward>
+  </trade>
+  <party id="party1"><partyName>A</partyName></party>
+  <party id="party2"><partyName>B</partyName></party>
+</dataDocument>

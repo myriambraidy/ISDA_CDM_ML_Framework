@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dataDocument xmlns="http://www.fpml.org/FpML-5/confirmation" fpmlVersion="5-11">
+  <trade>
+    <tradeHeader>
+      <partyTradeIdentifier>
+        <tradeId>NDF001</tradeId>
+      </partyTradeIdentifier>
+      <tradeDate>2024-05-15</tradeDate>
+    </tradeHeader>
+    <fxForward>
+      <exchangedCurrency1>
+        <paymentAmount>
+          <currency>BRL</currency>
+          <amount>25000000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency1>
+      <exchangedCurrency2>
+        <paymentAmount>
+          <currency>USD</currency>
+          <amount>5000000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency2>
+      <exchangeRate>
+        <rate>5.0</rate>
+      </exchangeRate>
+      <valueDate>2024-08-15</valueDate>
+      <nonDeliverableSettlement>
+        <settlementCurrency>USD</settlementCurrency>
+      </nonDeliverableSettlement>
+      <buyerPartyReference href="party1"/>
+      <sellerPartyReference href="party2"/>
+    </fxForward>
+  </trade>
+  <party id="party1">
+    <partyName>LatAm Bank</partyName>
+  </party>
+  <party id="party2">
+    <partyName>US Bank</partyName>
+  </party>
+</dataDocument>

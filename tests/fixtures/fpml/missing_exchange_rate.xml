@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dataDocument xmlns="http://www.fpml.org/FpML-5/confirmation" fpmlVersion="5-11">
+  <trade>
+    <tradeHeader>
+      <partyTradeIdentifier>
+        <tradeId>NORATE001</tradeId>
+      </partyTradeIdentifier>
+      <tradeDate>2024-06-15</tradeDate>
+    </tradeHeader>
+    <fxForward>
+      <exchangedCurrency1>
+        <paymentAmount>
+          <currency>EUR</currency>
+          <amount>3000000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency1>
+      <exchangedCurrency2>
+        <paymentAmount>
+          <currency>USD</currency>
+          <amount>3300000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency2>
+      <valueDate>2024-09-15</valueDate>
+    </fxForward>
+  </trade>
+  <party id="party1"><partyName>A</partyName></party>
+  <party id="party2"><partyName>B</partyName></party>
+</dataDocument>

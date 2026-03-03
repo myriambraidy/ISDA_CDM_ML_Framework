@@ -1,0 +1,29 @@
+{
+  "tradeDate": "2024-05-15",
+  "tradeIdentifiers": [
+    {
+      "tradeId": "NDF001"
+    }
+  ],
+  "currency1": "BRL",
+  "amount1": 25000000.0,
+  "currency2": "USD",
+  "amount2": 5000000.0,
+  "exchangeRate": 5.0,
+  "valueDate": "2024-08-15",
+  "settlementType": "CASH",
+  "settlementCurrency": "USD",
+  "parties": [
+    {
+      "id": "party1",
+      "name": "LatAm Bank"
+    },
+    {
+      "id": "party2",
+      "name": "US Bank"
+    }
+  ],
+  "buyerPartyReference": "party1",
+  "sellerPartyReference": "party2",
+  "sourceProduct": "fxForward"
+}

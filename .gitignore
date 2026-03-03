@@ -1,0 +1,75 @@
+# ------------------------
+# Python bytecode / cache
+# ------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ------------------------
+# Virtual environments
+# ------------------------
+.venv/
+venv/
+env/
+ENV/
+*.venv/
+
+# ------------------------
+# Build / packaging
+# ------------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ------------------------
+# Test / coverage artifacts
+# ------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ------------------------
+# IDE / editor settings
+# ------------------------
+.vscode/
+.idea/
+*.code-workspace
+
+# ------------------------
+# OS cruft
+# ------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------
+# Logs / local debugging
+# ------------------------
+*.log
+
+# ------------------------
+# Env / secrets
+# ------------------------
+.env
+.env.*
+*.pem
+*.key
+
+# ------------------------
+# Cursor / local agent stuff
+# ------------------------
+.agent/
+.cursor/
+
+# ------------------------
+# Project-specific generated data
+# (can be re-created via make corpus-*)
+# ------------------------
+data/corpus/fpml_official/
+data/corpus/reports/

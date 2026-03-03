@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Parsed FpML FX Forward",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tradeDate",
+    "valueDate",
+    "currency1",
+    "currency2",
+    "amount1",
+    "amount2",
+    "tradeIdentifiers",
+    "parties",
+    "settlementType"
+  ],
+  "properties": {
+    "tradeDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "valueDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "currency1": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 3
+    },
+    "currency2": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 3
+    },
+    "amount1": {
+      "type": "number"
+    },
+    "amount2": {
+      "type": "number"
+    },
+    "exchangeRate": {
+      "type": ["number", "null"]
+    },
+    "tradeIdentifiers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tradeId"],
+        "properties": {
+          "tradeId": {"type": "string"}
+        }
+      }
+    },
+    "parties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "settlementType": {
+      "type": "string",
+      "enum": ["PHYSICAL", "CASH", "REGULAR"]
+    },
+    "settlementCurrency": {
+      "type": ["string", "null"],
+      "minLength": 3,
+      "maxLength": 3
+    },
+    "buyerPartyReference": {
+      "type": ["string", "null"]
+    },
+    "sellerPartyReference": {
+      "type": ["string", "null"]
+    },
+    "sourceProduct": {
+      "type": "string",
+      "enum": ["fxForward", "fxSingleLeg"]
+    }
+  }
+}

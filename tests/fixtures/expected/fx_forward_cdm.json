@@ -1,0 +1,123 @@
+{
+  "trade": {
+    "tradeDate": {
+      "value": "2024-06-01"
+    },
+    "tradeIdentifier": [
+      {
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FX2024060100123"
+            }
+          }
+        ]
+      }
+    ],
+    "party": [
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party1"
+            }
+          }
+        ],
+        "name": {
+          "value": "Global Bank A"
+        }
+      },
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party2"
+            }
+          }
+        ],
+        "name": {
+          "value": "International Bank B"
+        }
+      }
+    ],
+    "tradableProduct": {
+      "product": {
+        "nonTransferableProduct": {
+          "economicTerms": {
+            "payout": {
+              "settlementPayout": [
+                {
+                  "settlementTerms": {
+                    "settlementDate": {
+                      "adjustableOrAdjustedDate": {
+                        "unadjustedDate": {
+                          "value": "2024-09-01"
+                        }
+                      }
+                    },
+                    "settlementType": "SettlementTypeEnum.PHYSICAL"
+                  },
+                  "payerReceiver": {
+                    "payer": {
+                      "globalReference": "party1"
+                    },
+                    "receiver": {
+                      "globalReference": "party2"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "tradeLot": [
+        {
+          "priceQuantity": [
+            {
+              "price": [
+                {
+                  "value": {
+                    "value": 1.09
+                  },
+                  "unit": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  },
+                  "perUnitOf": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  }
+                }
+              ],
+              "quantity": [
+                {
+                  "value": {
+                    "value": 10000000.0
+                  },
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  }
+                },
+                {
+                  "value": {
+                    "value": 9174311.93
+                  },
+                  "unit": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

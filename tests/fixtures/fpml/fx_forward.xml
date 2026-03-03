@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dataDocument xmlns="http://www.fpml.org/FpML-5/confirmation" fpmlVersion="5-11">
+  <trade>
+    <tradeHeader>
+      <partyTradeIdentifier>
+        <tradeId>FX2024060100123</tradeId>
+      </partyTradeIdentifier>
+      <tradeDate>2024-06-01</tradeDate>
+    </tradeHeader>
+    <fxForward>
+      <exchangedCurrency1>
+        <paymentAmount>
+          <currency>USD</currency>
+          <amount>10000000.00</amount>
+        </paymentAmount>
+      </exchangedCurrency1>
+      <exchangedCurrency2>
+        <paymentAmount>
+          <currency>EUR</currency>
+          <amount>9174311.93</amount>
+        </paymentAmount>
+      </exchangedCurrency2>
+      <exchangeRate>
+        <rate>1.09</rate>
+      </exchangeRate>
+      <valueDate>2024-09-01</valueDate>
+      <buyerPartyReference href="party1"/>
+      <sellerPartyReference href="party2"/>
+    </fxForward>
+  </trade>
+  <party id="party1">
+    <partyName>Global Bank A</partyName>
+  </party>
+  <party id="party2">
+    <partyName>International Bank B</partyName>
+  </party>
+</dataDocument>

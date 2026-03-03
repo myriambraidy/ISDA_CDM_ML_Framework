@@ -1,0 +1,28 @@
+{
+  "tradeDate": "2024-06-01",
+  "tradeIdentifiers": [
+    {
+      "tradeId": "FX2024060100123"
+    }
+  ],
+  "currency1": "USD",
+  "amount1": 10000000.0,
+  "currency2": "EUR",
+  "amount2": 9174311.93,
+  "exchangeRate": 1.09,
+  "valueDate": "2024-09-01",
+  "settlementType": "PHYSICAL",
+  "parties": [
+    {
+      "id": "party1",
+      "name": "Global Bank A"
+    },
+    {
+      "id": "party2",
+      "name": "International Bank B"
+    }
+  ],
+  "buyerPartyReference": "party1",
+  "sellerPartyReference": "party2",
+  "sourceProduct": "fxForward"
+}
