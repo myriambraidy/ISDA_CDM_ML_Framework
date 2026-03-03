@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .cdm_official_schema import get_trade_schema_validator
 from .parser import parse_fpml_fx
 from .types import (
     ErrorCode,
@@ -56,6 +57,34 @@ def validate_schema_file(schema_name: str, json_path: str) -> List[ValidationIss
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return validate_schema_data(schema_name, data)
+
+
+def validate_cdm_official_schema(trade_dict: Dict[str, Any]) -> List[ValidationIssue]:
+    """
+    Validate a CDM Trade object against the official FINOS CDM JSON Schemas.
+    """
+    try:
+        validator = get_trade_schema_validator()
+    except Exception as exc:
+        return [
+            ValidationIssue(
+                code=ErrorCode.SCHEMA_VALIDATION_FAILED.value,
+                message=f"Failed to load official CDM Trade schema: {exc}",
+                path="<schema>",
+            )
+        ]
+
+    issues: List[ValidationIssue] = []
+    for err in sorted(validator.iter_errors(trade_dict), key=lambda e: list(e.path)):
+        path = ".".join(str(p) for p in err.path) or "<root>"
+        issues.append(
+            ValidationIssue(
+                code=ErrorCode.SCHEMA_VALIDATION_FAILED.value,
+                message=err.message,
+                path=path,
+            )
+        )
+    return issues
 
 
 def _float_equal(left: Optional[float], right: Optional[float], tol: float) -> bool:
@@ -223,7 +252,8 @@ def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> Validati
     normalized_schema_errors = validate_schema_data("fpml_fx_forward_parsed.schema.json", normalized.to_dict())
     errors.extend(normalized_schema_errors)
 
-    cdm_schema_errors = validate_schema_data("cdm_fx_forward.schema.json", cdm_obj)
+    trade_dict = cdm_obj.get("trade", {})
+    cdm_schema_errors = validate_cdm_official_schema(trade_dict)
     errors.extend(cdm_schema_errors)
 
     semantic_errors, mapping_score = _semantic_validation(normalized, cdm_obj)
