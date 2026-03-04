@@ -1,14 +1,14 @@
 {
   "trade": {
     "tradeDate": {
-      "value": "2024-06-01"
+      "value": "2024-07-10"
     },
     "tradeIdentifier": [
       {
         "assignedIdentifier": [
           {
             "identifier": {
-              "value": "FX2024060100123"
+              "value": "FXLEG001"
             }
           }
         ],
@@ -27,7 +27,7 @@
           }
         ],
         "name": {
-          "value": "Global Bank A"
+          "value": "Bank 1"
         }
       },
       {
@@ -39,7 +39,7 @@
           }
         ],
         "name": {
-          "value": "International Bank B"
+          "value": "Bank 2"
         }
       }
     ],
@@ -82,7 +82,7 @@
               },
               "settlementTerms": {
                 "settlementDate": {
-                  "valueDate": "2024-09-01"
+                  "valueDate": "2024-10-10"
                 },
                 "settlementType": "Physical"
               },
@@ -94,7 +94,7 @@
                         "identifier": [
                           {
                             "identifier": {
-                              "value": "USD"
+                              "value": "GBP"
                             },
                             "identifierType": "CurrencyCode"
                           }
@@ -116,15 +116,15 @@
             "price": [
               {
                 "value": {
-                  "value": 1.09,
+                  "value": 1.28,
                   "unit": {
                     "currency": {
-                      "value": "EUR"
+                      "value": "USD"
                     }
                   },
                   "perUnitOf": {
                     "currency": {
-                      "value": "USD"
+                      "value": "GBP"
                     }
                   },
                   "priceType": "ExchangeRate"
@@ -134,20 +134,20 @@
             "quantity": [
               {
                 "value": {
-                  "value": 10000000.0,
+                  "value": 5000000.0,
                   "unit": {
                     "currency": {
-                      "value": "USD"
+                      "value": "GBP"
                     }
                   }
                 }
               },
               {
                 "value": {
-                  "value": 9174311.93,
+                  "value": 6400000.0,
                   "unit": {
                     "currency": {
-                      "value": "EUR"
+                      "value": "USD"
                     }
                   }
                 }
