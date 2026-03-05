@@ -411,6 +411,49 @@ def read_java_file(
 
 # ── Tool 8: patch_java_file ──────────────────────────────────────────
 
+
+def _normalize_whitespace_for_match(s: str) -> str:
+    """Normalize for fuzzy match: strip trailing whitespace per line, rejoin with \\n."""
+    return "\n".join(line.rstrip() for line in s.split("\n"))
+
+
+def _build_normalized_to_original_map(content: str) -> tuple[str, List[int]]:
+    """Return (normalized_content, list of original index per normalized char)."""
+    lines = content.split("\n")
+    norm_parts: List[str] = [line.rstrip() for line in lines]
+    normalized_content = "\n".join(norm_parts)
+    norm_to_orig: List[int] = []
+    orig_i = 0
+    for i, line in enumerate(lines):
+        stripped = norm_parts[i]
+        for _ in stripped:
+            norm_to_orig.append(orig_i)
+            orig_i += 1
+        if i < len(lines) - 1:
+            norm_to_orig.append(orig_i)
+            orig_i += 1  # \n
+    return normalized_content, norm_to_orig
+
+
+def _suggest_old_text_from_file(content: str, old: str) -> Optional[str]:
+    """If old has a distinctive token, return the exact line(s) from content containing it."""
+    stripped = old.strip()
+    if not stripped:
+        return None
+    # Prefer a short distinctive substring (e.g. method call)
+    for token in (".setIdentifierType", ".setValue(", ".build()", ".addParty("):
+        if token in stripped:
+            key = token
+            break
+    else:
+        key = stripped[:40].strip() if len(stripped) > 40 else stripped
+    lines = content.split("\n")
+    for line in lines:
+        if key in line:
+            return line
+    return None
+
+
 def patch_java_file(
     old_text: str = "",
     new_text: str = "",
@@ -421,6 +464,8 @@ def patch_java_file(
 
     Supports single replacement (old_text/new_text) or batch mode via
     the ``patches`` parameter (list of {"old_text": ..., "new_text": ...}).
+    Uses exact match first; if not found, tries normalized whitespace match (strip
+    trailing per line). On failure, may return suggested_old_text from the file.
     """
     path = GENERATED_DIR / filename
     if not path.exists():
@@ -439,17 +484,39 @@ def patch_java_file(
     content = path.read_text(encoding="utf-8")
     total_replacements = 0
     errors: List[str] = []
+    matched_normalized = False
+    suggested_for_not_found: List[Optional[str]] = []
 
     for old, new in pairs:
+        normalized_content, norm_to_orig = _build_normalized_to_original_map(content)
         if old == new:
             errors.append(f"No-op: old_text == new_text ({old[:80]!r})")
+            suggested_for_not_found.append(None)
             continue
         count = content.count(old)
-        if count == 0:
-            errors.append(f"Not found: {old[:120]!r}")
+        if count > 0:
+            content = content.replace(old, new)
+            total_replacements += count
+            suggested_for_not_found.append(None)
             continue
-        content = content.replace(old, new)
-        total_replacements += count
+        # Exact not found: try normalized match
+        norm_old = _normalize_whitespace_for_match(old)
+        norm_count = normalized_content.count(norm_old)
+        if norm_count == 1:
+            start = normalized_content.find(norm_old)
+            end = start + len(norm_old)
+            orig_start = norm_to_orig[start]
+            orig_end = norm_to_orig[end] if end < len(norm_to_orig) else len(content)
+            content = content[:orig_start] + new + content[orig_end:]
+            total_replacements += 1
+            matched_normalized = True
+            suggested_for_not_found.append(None)
+            continue
+        if norm_count > 1:
+            errors.append(f"Not found (ambiguous normalized match): {old[:80]!r}")
+        else:
+            errors.append(f"Not found: {old[:120]!r}")
+        suggested_for_not_found.append(_suggest_old_text_from_file(content, old))
 
     path.write_text(content, encoding="utf-8")
 
@@ -458,8 +525,13 @@ def patch_java_file(
         "replacements_made": total_replacements,
         "path": str(path),
     }
+    if matched_normalized:
+        result["matched_with_normalized_whitespace"] = True
     if errors:
         result["warnings"] = errors
+        suggested = [s for s in suggested_for_not_found if s is not None]
+        if suggested:
+            result["suggested_old_text"] = suggested[0] if len(suggested) == 1 else suggested
     return result
 
 

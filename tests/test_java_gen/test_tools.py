@@ -362,6 +362,39 @@ class PatchJavaFileTests(unittest.TestCase):
         )
         self.assertEqual(result["replacements_made"], 3)
 
+    def test_normalized_whitespace_match(self) -> None:
+        """When old_text has different trailing whitespace so exact fails, normalized match applies."""
+        # File has one trailing space; old_text has two (so exact match fails).
+        (GENERATED_DIR / self.test_file).write_text(
+            "  import foo; \npublic class TestPatch {}", encoding="utf-8"
+        )
+        result = patch_java_file(
+            old_text="  import foo;  ",
+            new_text="  import bar;",
+            filename=self.test_file,
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["replacements_made"], 1)
+        self.assertTrue(result.get("matched_with_normalized_whitespace"))
+        content = (GENERATED_DIR / self.test_file).read_text()
+        self.assertIn("import bar;", content)
+
+    def test_suggested_old_text_when_not_found(self) -> None:
+        """When old_text is not found but file has a matching line, suggested_old_text is returned."""
+        (GENERATED_DIR / self.test_file).write_text(
+            "  .setIdentifierType(\"CurrencyCode\")\n  .build();\n",
+            encoding="utf-8",
+        )
+        result = patch_java_file(
+            old_text=".setIdentifierType(  \"CurrencyCode\"  )",
+            new_text=".setIdentifierType(AssetIdTypeEnum.CURRENCY_CODE)",
+            filename=self.test_file,
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("warnings", result)
+        self.assertIn("suggested_old_text", result)
+        self.assertIn(".setIdentifierType", result["suggested_old_text"])
+
 
 # ── compile_java ─────────────────────────────────────────────────────
 

@@ -7,7 +7,9 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+from unittest.mock import patch
 
+from fpml_cdm.java_gen import agent as agent_module
 from fpml_cdm.java_gen.agent import (
     AgentConfig,
     AgentResult,
@@ -176,6 +178,28 @@ class AgentLoopTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Max iterations", result.summary)
 
+    def test_text_only_then_nudge_then_finish(self) -> None:
+        """First response is text-only; nudge is appended; next response has tool_calls and finish."""
+        responses = [
+            MockMessage(content="I will now generate the code and call finish."),
+            MockMessage(tool_calls=[
+                MockToolCall(
+                    id="call_finish",
+                    function=MockFunctionCall(
+                        name="finish",
+                        arguments='{"status": "success", "summary": "Done", "match_percentage": 100.0}',
+                    ),
+                )
+            ]),
+        ]
+        client = MockLLMClient(responses)
+        config = AgentConfig(max_iterations=5, timeout_seconds=30)
+        result = run_agent(str(CDM_FIXTURE), llm_client=client, config=config)
+        self.assertTrue(result.success)
+        text_entries = [t for t in result.trace if t.get("type") == "text"]
+        self.assertGreaterEqual(len(text_entries), 1)
+        self.assertEqual(result.iterations, 2)
+
     def test_tool_call_then_finish(self) -> None:
         """Agent calls a tool, then finishes."""
         responses = [
@@ -294,6 +318,45 @@ class AgentLoopTests(unittest.TestCase):
         self.assertTrue(d["success"])
         self.assertEqual(d["match_percentage"], 99.5)
         self.assertEqual(d["duration_seconds"], 45.68)
+
+    def test_deterministic_run_java_diff_after_compile_success(self) -> None:
+        """After compile_java success, agent injects run_java + diff_json; next turn finish -> success."""
+        responses = [
+            MockMessage(tool_calls=[
+                MockToolCall(
+                    id="call_compile",
+                    function=MockFunctionCall(
+                        name="compile_java",
+                        arguments='{"filename": "CdmTradeBuilder.java"}',
+                    ),
+                )
+            ]),
+            MockMessage(tool_calls=[
+                MockToolCall(
+                    id="call_finish",
+                    function=MockFunctionCall(
+                        name="finish",
+                        arguments='{"status": "success", "summary": "Done", "match_percentage": 100.0, "java_file": "generated/CdmTradeBuilder.java"}',
+                    ),
+                )
+            ]),
+        ]
+        client = MockLLMClient(responses)
+        config = AgentConfig(max_iterations=5, timeout_seconds=30)
+        real_execute = agent_module._execute_tool
+
+        def mock_execute(fn_name: str, fn_args: object) -> str:
+            if fn_name == "compile_java":
+                return json.dumps({"success": True, "class_file": "generated/CdmTradeBuilder.class", "warnings": []})
+            return real_execute(fn_name, fn_args)
+
+        with patch.object(agent_module, "_execute_tool", mock_execute):
+            result = run_agent(str(CDM_FIXTURE), llm_client=client, config=config)
+
+        self.assertTrue(result.success)
+        tool_names = [t["tool"] for t in result.trace if t.get("type") == "tool_call"]
+        self.assertIn("run_java", tool_names)
+        self.assertIn("diff_json", tool_names)
 
 
 JAR_PATH = Path("rosetta-validator/target/rosetta-validator-1.0.0.jar")

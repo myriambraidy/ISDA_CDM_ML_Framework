@@ -101,7 +101,7 @@ class OpenRouterClientTests(unittest.TestCase):
         with patch("fpml_cdm.java_gen.openrouter_client.requests.post", return_value=mock_response) as post:
             client = OpenRouterClient(api_key="sk-secret")
             client.chat.completions.create(
-                model="z-ai/glm-4.6",
+                model="google/gemini-2.5-flash",
                 messages=[{"role": "user", "content": "Hi"}],
             )
             post.assert_called_once()
@@ -109,7 +109,7 @@ class OpenRouterClientTests(unittest.TestCase):
             self.assertEqual(call_kw["headers"]["Authorization"], "Bearer sk-secret")
             self.assertEqual(call_kw["headers"]["Content-Type"], "application/json")
             self.assertIn("https://openrouter.ai/api/v1/chat/completions", post.call_args[0][0])
-            self.assertEqual(call_kw["json"]["model"], "z-ai/glm-4.6")
+            self.assertEqual(call_kw["json"]["model"], "google/gemini-2.5-flash")
             self.assertEqual(call_kw["json"]["messages"], [{"role": "user", "content": "Hi"}])
 
     def test_client_requires_api_key(self) -> None:

@@ -158,12 +158,21 @@ not `ReferenceWithMetaObservable.builder().setValue(null)`. Use `lookup_cdm_sche
 Observable, Asset, Cash as needed and construct the full builder chain so the serialized JSON matches.
 
 ## Efficiency Rules
-- **Batch lookups**: After `inspect_cdm_json`, call `lookup_cdm_schema` for ALL types
-  you need in one turn (the LLM supports parallel tool calls).
+- **First 1–2 turns**: After `inspect_cdm_json` and `get_java_template`, call ALL
+  `lookup_cdm_schema` and `list_enum_values` you need in parallel in a single turn.
+  Do not call `write_java_file` until you have gathered schema and enum info for every
+  type you need. The LLM supports multiple tool calls per turn — use them.
+- **Batch lookups**: In one turn, call `lookup_cdm_schema` for every type you need
+  (Trade, Party, SettlementPayout, Underlier, etc.) and `list_enum_values` for every
+  enum (CounterpartyRoleEnum, PartyRoleEnum, SettlementTypeEnum, etc.).
 - **Batch patches**: Use the `patches` parameter of `patch_java_file` to apply multiple
   independent fixes in a single call instead of one patch per call.
 - **Use type_registry**: The `inspect_cdm_json` response already has imports and builder
   entries — use them directly. Only call `resolve_java_type` for types NOT in the registry.
+
+## Response format
+- Always respond with **at least one tool call**; do not respond with only commentary or planning.
+- If you need to reason, keep it brief and include the tool call(s) in the same turn.
 
 ## Rules
 - ALWAYS look up schemas before assuming type names or method signatures
@@ -226,6 +235,7 @@ def run_agent(
     total_tool_calls = 0
     last_tool_key = ""
     repeat_count = 0
+    consecutive_text_only = 0
     total_tool_time = 0.0
     total_llm_time = 0.0
 
@@ -296,8 +306,19 @@ def run_agent(
                 "type": "text",
                 "content": (message.content or "")[:500],
             })
+            consecutive_text_only += 1
+            if consecutive_text_only == 1:
+                nudge = (
+                    "You must respond with at least one tool call "
+                    "(e.g. read_java_file, patch_java_file, compile_java, or finish). "
+                    "Do not respond with only text."
+                )
+                messages.append({"role": "user", "content": nudge})
             continue
 
+        consecutive_text_only = 0
+        last_tool_name = ""
+        last_tool_result_str = ""
         for tool_call in message.tool_calls:
             total_tool_calls += 1
             fn_name = tool_call.function.name
@@ -365,6 +386,42 @@ def run_agent(
                 "tool_call_id": tool_call.id,
                 "content": result_str,
             })
+            last_tool_name = fn_name
+            last_tool_result_str = result_str
+
+        if last_tool_name == "compile_java":
+            try:
+                compile_res = json.loads(last_tool_result_str)
+                if compile_res.get("success") is True:
+                    run_result = run_java(class_name="CdmTradeBuilder", timeout=30)
+                    run_result_str = json.dumps(run_result, default=str)
+                    run_stdout = run_result.get("stdout", "") or ""
+                    if run_result.get("success") and run_stdout.strip():
+                        diff_result = diff_json(expected_json_path=cdm_json_path, actual_json=run_stdout)
+                        diff_result_str = json.dumps(diff_result, default=str)
+                    else:
+                        diff_result_str = json.dumps({"error": "run_java did not produce output", "run_result": run_result}, default=str)
+                    id_run = "call_det_run"
+                    id_diff = "call_det_diff"
+                    messages.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {"type": "function", "id": id_run, "function": {"name": "run_java", "arguments": json.dumps({"class_name": "CdmTradeBuilder", "timeout": 30})}},
+                            {"type": "function", "id": id_diff, "function": {"name": "diff_json", "arguments": json.dumps({"expected_json_path": cdm_json_path, "actual_json": run_stdout[:10000]})}},
+                        ],
+                    })
+                    messages.append({"role": "tool", "tool_call_id": id_run, "content": run_result_str})
+                    messages.append({"role": "tool", "tool_call_id": id_diff, "content": diff_result_str})
+                    trace.append({"iteration": iteration, "type": "tool_call", "tool": "run_java", "args": {"class_name": "CdmTradeBuilder", "timeout": 30}})
+                    trace.append({"iteration": iteration, "type": "tool_result", "tool": "run_java", "result_preview": run_result_str[:500]})
+                    trace.append({"iteration": iteration, "type": "tool_call", "tool": "diff_json", "args": {"expected_json_path": cdm_json_path, "actual_json": f"<len {len(run_stdout)} chars>"}})
+                    trace.append({"iteration": iteration, "type": "tool_result", "tool": "diff_json", "result_preview": diff_result_str[:500]})
+                    total_tool_calls += 2
+                    if log_progress:
+                        sys.stderr.write("    [deterministic] run_java + diff_json\n")
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
 
         if log_progress:
             sys.stderr.write(f"  [iter {iteration+1}] {total_tool_calls} tool calls (total so far: {total_tool_time:.1f}s tools, {total_llm_time:.1f}s LLM)\n")
