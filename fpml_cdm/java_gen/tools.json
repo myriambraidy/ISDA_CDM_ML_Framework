@@ -1,0 +1,221 @@
+{
+  "tools": [
+    {
+      "name": "inspect_cdm_json",
+      "description": "Analyze CDM JSON structure. Returns a tree of all nodes with their JSON paths, inferred CDM types, leaf values, array indicators, a summary of all types and enums used, a type_registry with pre-resolved Java imports/builders for every type, and java_type_warnings for fields where the Java type differs from the schema type (e.g. date fields). Call this FIRST — use the type_registry directly instead of calling resolve_java_type for each type.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "json_path": {
+            "type": "string",
+            "description": "Path to the CDM JSON file to analyze"
+          }
+        },
+        "required": ["json_path"]
+      }
+    },
+    {
+      "name": "lookup_cdm_schema",
+      "description": "Look up the JSON Schema definition for a CDM type. Returns all properties with their types, $ref targets, required flags, Java class names, and setter method hints. Use this to understand what fields a builder needs and what types they accept.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type_name": {
+            "type": "string",
+            "description": "CDM type name (e.g. 'Trade', 'Party', 'SettlementPayout') or schema filename"
+          }
+        },
+        "required": ["type_name"]
+      }
+    },
+    {
+      "name": "resolve_java_type",
+      "description": "Resolve a CDM schema $ref to its fully-qualified Java class name, package, builder class, and import statement. Use this when you need the exact import for a type referenced in a schema.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "schema_ref": {
+            "type": "string",
+            "description": "Schema $ref value (e.g. 'cdm-event-common-Trade.schema.json')"
+          }
+        },
+        "required": ["schema_ref"]
+      }
+    },
+    {
+      "name": "list_enum_values",
+      "description": "List all valid values for a CDM enum type, with their Java constant representations. Use this whenever you encounter a string value that represents an enum (e.g. 'Party1', 'Physical', 'Buyer').",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "enum_name": {
+            "type": "string",
+            "description": "Enum type name (e.g. 'CounterpartyRoleEnum', 'SettlementTypeEnum')"
+          }
+        },
+        "required": ["enum_name"]
+      }
+    },
+    {
+      "name": "get_java_template",
+      "description": "Get the boilerplate Java file template with main method and RosettaObjectMapper serialization. Contains IMPORTS_PLACEHOLDER and BUILDER_CODE_PLACEHOLDER markers for you to fill in.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "write_java_file",
+      "description": "Write complete Java source code to the generation output directory. Overwrites any existing file.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Complete Java source code to write"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Output filename (default: CdmTradeBuilder.java)"
+          }
+        },
+        "required": ["code"]
+      }
+    },
+    {
+      "name": "read_java_file",
+      "description": "Read the current content of the generated Java source file. Use this to review code before compilation or after making patches.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "Filename to read (default: CdmTradeBuilder.java)"
+          }
+        }
+      }
+    },
+    {
+      "name": "patch_java_file",
+      "description": "Replace text sections in the Java file. Supports single replacement (old_text/new_text) or batch mode via the patches parameter (list of {old_text, new_text} pairs). Use batch mode to apply multiple independent fixes in one call.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "old_text": {
+            "type": "string",
+            "description": "Exact text to find in the file (for single replacement)"
+          },
+          "new_text": {
+            "type": "string",
+            "description": "Replacement text (for single replacement)"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Filename to patch (default: CdmTradeBuilder.java)"
+          },
+          "patches": {
+            "type": "array",
+            "description": "Batch mode: list of {old_text, new_text} pairs to apply in one call",
+            "items": {
+              "type": "object",
+              "properties": {
+                "old_text": { "type": "string" },
+                "new_text": { "type": "string" }
+              },
+              "required": ["old_text", "new_text"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "compile_java",
+      "description": "Compile the Java file against the CDM classpath (rosetta-validator fat JAR). Returns structured compilation errors with line numbers, messages, and the offending source line. If successful, the .class file is ready to run.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "Java source file to compile (default: CdmTradeBuilder.java)"
+          }
+        }
+      }
+    },
+    {
+      "name": "run_java",
+      "description": "Execute the compiled Java class. Captures stdout (expected to be CDM JSON) and stderr. The class should have a main method that builds a Trade, serializes it via RosettaObjectMapper, and prints it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "class_name": {
+            "type": "string",
+            "description": "Class name to run (default: CdmTradeBuilder)"
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Max seconds to wait (default: 30)"
+          }
+        }
+      }
+    },
+    {
+      "name": "diff_json",
+      "description": "Deep-compare the original CDM JSON with the Java-produced output. Returns match percentage, list of differences (with paths, expected/actual values, and fix hints), and extra fields in actual output. This is your primary success metric.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expected_json_path": {
+            "type": "string",
+            "description": "Path to the expected CDM JSON file"
+          },
+          "actual_json": {
+            "type": "string",
+            "description": "JSON string produced by the Java program"
+          }
+        },
+        "required": ["expected_json_path", "actual_json"]
+      }
+    },
+    {
+      "name": "validate_output",
+      "description": "Validate the Java-produced JSON against the official CDM Trade JSON Schema (845 schemas with $ref resolution). Confirms the output is structurally valid CDM.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "json_string": {
+            "type": "string",
+            "description": "JSON string to validate"
+          }
+        },
+        "required": ["json_string"]
+      }
+    },
+    {
+      "name": "finish",
+      "description": "Signal that the task is complete. Call this when the Java code compiles, runs, and produces output matching the input CDM JSON (or when max iterations are reached).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["success", "failure"],
+            "description": "Whether the generation succeeded"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Brief summary of the result"
+          },
+          "java_file": {
+            "type": "string",
+            "description": "Path to the generated Java file"
+          },
+          "match_percentage": {
+            "type": "number",
+            "description": "Final diff match percentage (0-100)"
+          }
+        },
+        "required": ["status", "summary"]
+      }
+    }
+  ]
+}

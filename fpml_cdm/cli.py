@@ -230,6 +230,75 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_generate_java(args: argparse.Namespace) -> int:
+    """Generate Java code from CDM JSON using agent loop."""
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    from .java_gen.agent import run_agent, AgentConfig
+
+    err = sys.stderr
+    err.write(f"\n[1/2] Initializing agent for {args.input}...\n")
+
+    config = AgentConfig(
+        max_iterations=args.max_iterations,
+        max_tool_calls=args.max_tool_calls,
+        timeout_seconds=args.timeout,
+    )
+
+    if getattr(args, "provider", "openrouter") == "openai":
+        try:
+            import openai
+            client = openai.OpenAI(
+                api_key=getattr(args, "api_key", None) or None,
+                base_url=getattr(args, "base_url", None) or None,
+            )
+        except ImportError:
+            err.write("  FAIL: openai package not installed. Run: pip install openai\n")
+            return 2
+    else:
+        import os
+        from .java_gen.openrouter_client import OpenRouterClient
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            err.write("  FAIL: OPENROUTER_API_KEY not set. Set it in .env or the environment.\n")
+            return 2
+        try:
+            client = OpenRouterClient(api_key=api_key)
+        except ValueError as e:
+            err.write(f"  FAIL: {e}\n")
+            return 2
+
+    err.write(f"  Model: {args.model}\n")
+    err.write(f"  Max iterations: {config.max_iterations}\n")
+    err.write(f"\n[2/2] Running agent loop...\n")
+
+    log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
+    result = run_agent(
+        cdm_json_path=args.input,
+        llm_client=client,
+        model=args.model,
+        config=config,
+        log_progress=log_progress,
+    )
+
+    err.write(f"\nAgent completed in {result.duration_seconds:.1f}s\n")
+    err.write(f"  Iterations:  {result.iterations}\n")
+    err.write(f"  Tool calls:  {result.total_tool_calls}\n")
+    err.write(f"  Match:       {result.match_percentage}%\n")
+    err.write(f"  Status:      {'SUCCESS' if result.success else 'FAILURE'}\n")
+    err.write(f"  Summary:     {result.summary}\n")
+
+    if args.trace_output:
+        _write_json({"trace": result.trace, "result": result.to_dict()}, args.trace_output)
+        err.write(f"  Trace:       {args.trace_output}\n")
+
+    if result.java_file:
+        err.write(f"  Java file:   {result.java_file}\n")
+
+    return 0 if result.success else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic FpML FX Forward -> CDM v6 converter")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -277,6 +346,23 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--llm-base-url", default="http://localhost:11434/v1", help="Base URL for openai_compat provider (default: http://localhost:11434/v1)")
     convert_parser.add_argument("--llm-model", default="llama3.2", help="Model name for LLM provider (default: llama3.2)")
     convert_parser.set_defaults(func=cmd_convert)
+
+    java_gen_parser = subparsers.add_parser(
+        "generate-java",
+        help="Generate Java code from CDM JSON using agent loop (OpenRouter by default)",
+    )
+    java_gen_parser.add_argument("input", help="CDM JSON file")
+    java_gen_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
+    java_gen_parser.add_argument("--model", default="z-ai/glm-4.6", help="LLM model name (default: z-ai/glm-4.6)")
+    java_gen_parser.add_argument("--api-key", default=None, help="API key (for --provider openai: OpenAI key; else ignored)")
+    java_gen_parser.add_argument("--base-url", default=None, help="Base URL (for --provider openai only)")
+    java_gen_parser.add_argument("--max-iterations", type=int, default=20, help="Max agent iterations (default: 20)")
+    java_gen_parser.add_argument("--max-tool-calls", type=int, default=50, help="Max total tool calls (default: 50)")
+    java_gen_parser.add_argument("--timeout", type=int, default=600, help="Agent timeout in seconds; increase for large CDM or slow models (default: 600)")
+    java_gen_parser.add_argument("--trace-output", help="Write agent trace JSON to file")
+    java_gen_parser.add_argument("--verbose", "-v", action="store_true", help="Always show per-tool and LLM timing logs")
+    java_gen_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-tool and LLM timing logs (default: show when stderr is a TTY)")
+    java_gen_parser.set_defaults(func=cmd_generate_java)
 
     return parser
 

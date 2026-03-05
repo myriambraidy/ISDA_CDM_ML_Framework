@@ -9,7 +9,7 @@ CORPUS_REPORT ?= data/corpus/reports/latest.json
 CORPUS_REPORT_FX ?= data/corpus/reports/latest_fx.json
 ROSETTA_JAR ?= rosetta-validator/target/rosetta-validator-1.0.0.jar
 
-.PHONY: test check parse-sample convert-sample corpus-import corpus-check corpus-check-fx rosetta-build validate-rosetta-sample
+.PHONY: test check parse-sample convert-sample corpus-import corpus-check corpus-check-fx rosetta-build validate-rosetta-sample test-java-gen generate-java
 
 test:
 	$(PYTHON) -m unittest discover -s tests -p "test_*.py" -q
@@ -37,5 +37,11 @@ validate-rosetta-sample: $(ROSETTA_JAR)
 
 $(ROSETTA_JAR):
 	$(MAKE) rosetta-build
+
+test-java-gen:
+	$(PYTHON) -m unittest discover -s tests/test_java_gen -p "test_*.py" -q
+
+generate-java:
+	$(PYTHON) -m fpml_cdm generate-java tests/fixtures/expected/fx_forward_cdm.json --trace-output tmp/trace.json
 
 check: test

@@ -58,6 +58,7 @@ Thumbs.db
 # ------------------------
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
@@ -73,3 +74,9 @@ Thumbs.db
 # ------------------------
 data/corpus/fpml_official/
 data/corpus/reports/
+
+# ------------------------
+# Java code generation output
+# (re-created via make generate-java)
+# ------------------------
+generated/
