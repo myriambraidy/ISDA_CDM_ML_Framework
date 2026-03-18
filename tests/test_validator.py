@@ -23,7 +23,8 @@ class ValidatorTests(unittest.TestCase):
         fpml_path = FIXTURES / "fpml" / "fx_forward.xml"
         model = parse_fpml_fx(str(fpml_path))
         cdm = transform_to_cdm_v6(model)
-        cdm["trade"]["tradableProduct"]["tradeLot"][0]["priceQuantity"][0]["quantity"][0]["unit"]["currency"]["value"] = "CHF"
+        cdm["trade"]["tradeLot"][0]["priceQuantity"][0]["quantity"][0]["value"]["unit"]["currency"]["value"] = "CHF"
+        cdm["trade"]["tradeLot"][0]["priceQuantity"][0]["quantity"][0]["value"]["value"] = 999.0
 
         report = validate_transformation(str(fpml_path), cdm)
         self.assertFalse(report.valid)

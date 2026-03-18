@@ -10,7 +10,7 @@ from .parser import parse_fpml_fx
 from .pipeline import convert_fpml_to_cdm
 from .transformer import transform_to_cdm_v6
 from .types import NormalizedFxForward, ParserError, ValidationIssue
-from .validator import validate_conversion_files
+from .validator import validate_conversion_files, validate_schema_data
 
 
 def _write_json(data, output: str | None) -> None:
@@ -63,6 +63,145 @@ def cmd_validate_schema(args: argparse.Namespace) -> int:
     return 0 if report["valid"] else 1
 
 
+_FAILURE_HINTS = {
+    "TradeSettlementPayout": (
+        "Trade is missing 'partyRole' entries with Buyer/Seller roles.\n"
+        "  FIX: Add partyRole array to the Trade object, e.g.:\n"
+        '       "partyRole": [\n'
+        '         {"role": "Buyer", "partyReference": {"globalReference": "party1"}},\n'
+        '         {"role": "Seller", "partyReference": {"globalReference": "party2"}}\n'
+        "       ]"
+    ),
+    "SettlementDateBusinessDays": (
+        "Settlement date uses a field name the validator doesn't recognize.\n"
+        "  FIX: Use 'adjustableOrRelativeDate' (CDM v6) instead of 'adjustableOrAdjustedDate' (v5).\n"
+        "       Or use 'valueDate' directly for simple dates."
+    ),
+    "UnderlierChoice": (
+        "SettlementPayout.underlier is empty — must have 'Observable' or 'Product'.\n"
+        "  FIX: For FX, set underlier.Observable to the FX rate observable, e.g.:\n"
+        '       "underlier": {"Observable": {"currencyPair": {"currency1": "USD", "currency2": "EUR"}}}'
+    ),
+    "IdentifierIssuerChoice": (
+        "TradeIdentifier is missing 'issuer' or 'issuerReference'.\n"
+        "  FIX: Add issuer (e.g. LEI or party ID) to each tradeIdentifier."
+    ),
+}
+
+
+def _print_diagnostic(result, input_path: str, verbose: bool) -> None:
+    """Print human-readable diagnostic to stderr."""
+    import sys
+    err = sys.stderr
+
+    err.write(f"\n{'='*60}\n")
+    err.write(f"  Rosetta CDM Validator Report\n")
+    err.write(f"{'='*60}\n\n")
+
+    err.write(f"  Input:   {input_path}\n")
+    err.write(f"  Status:  {'PASS' if result.valid else 'FAIL'}\n")
+    err.write(f"  Failures: {len(result.failures)}\n")
+
+    if result.error:
+        err.write(f"\n  RUNTIME ERROR: {result.error}\n")
+
+    if not result.failures:
+        err.write(f"\n  All Rosetta type validations passed.\n")
+        err.write(f"{'='*60}\n\n")
+        return
+
+    err.write(f"\n{'─'*60}\n")
+
+    for i, f in enumerate(result.failures, 1):
+        name = f.get("name", "?")
+        rule_type = f.get("type", "UNKNOWN")
+        path = f.get("path", "")
+        definition = f.get("definition", "")
+        message = f.get("failureMessage", "")
+
+        err.write(f"\n  [{i}/{len(result.failures)}] {name}\n")
+        err.write(f"  Type:    {rule_type}\n")
+        err.write(f"  Path:    {path}\n")
+
+        if message:
+            err.write(f"  Error:   {message}\n")
+
+        if verbose and definition:
+            err.write(f"  Rule:    {definition}\n")
+
+        hint = _FAILURE_HINTS.get(name)
+        if hint:
+            err.write(f"\n  Hint:\n")
+            for line in hint.splitlines():
+                err.write(f"    {line}\n")
+
+        err.write(f"\n{'─'*60}\n")
+
+    err.write(f"\nSummary: {len(result.failures)} failure(s) — fix the transformer output.\n")
+    err.write(f"{'='*60}\n\n")
+
+
+def cmd_validate_rosetta(args: argparse.Namespace) -> int:
+    """Validate CDM JSON against the Rosetta type system (requires Java + built JAR)."""
+    import sys
+    from .rosetta_validator import validate_cdm_rosetta, find_jar, java_available
+
+    err = sys.stderr
+    verbose = args.verbose
+
+    err.write("\n[1/4] Checking prerequisites...\n")
+    if not java_available():
+        err.write("  FAIL: Java not found on PATH. Install JDK 11+.\n")
+        return 2
+    err.write("  OK:  Java found\n")
+
+    jar = find_jar()
+    if jar is None:
+        err.write("  FAIL: Rosetta validator JAR not found.\n")
+        err.write("  Run:  cd rosetta-validator && mvn package -q\n")
+        return 2
+    err.write(f"  OK:  JAR found at {jar}\n")
+
+    err.write(f"\n[2/4] Loading CDM JSON from {args.input}...\n")
+    try:
+        with open(args.input, "r", encoding="utf-8") as f:
+            cdm_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        err.write(f"  FAIL: {exc}\n")
+        return 2
+
+    trade = cdm_data.get("trade", {})
+    top_keys = list(trade.keys()) if trade else []
+    err.write(f"  OK:  Loaded ({len(json.dumps(cdm_data))} bytes)\n")
+    if verbose:
+        err.write(f"  Trade top-level keys: {top_keys}\n")
+
+    err.write(f"\n[3/4] Running RosettaTypeValidator (Java)...\n")
+    try:
+        result = validate_cdm_rosetta(
+            cdm_data,
+            target_type=args.type,
+            timeout_seconds=args.timeout,
+        )
+    except (FileNotFoundError, RuntimeError) as exc:
+        err.write(f"  FAIL: {exc}\n")
+        _write_json({"valid": False, "error": str(exc)}, args.output)
+        return 2
+
+    err.write(f"  Done (exit code {result.exit_code})\n")
+
+    err.write(f"\n[4/4] Results\n")
+    _print_diagnostic(result, args.input, verbose)
+
+    if args.output:
+        _write_json(result.to_dict(), args.output)
+        err.write(f"  JSON report written to {args.output}\n")
+    elif not args.quiet:
+        _write_json(result.to_dict(), None)
+
+    return 0 if result.valid else 1
+
+
 def _resolve_llm_provider(args: argparse.Namespace):
     provider_name = getattr(args, "llm_provider", "none") or "none"
     if provider_name == "none":
@@ -89,6 +228,75 @@ def cmd_convert(args: argparse.Namespace) -> int:
         _write_json(result.validation.to_dict(), args.report_output)
 
     return 0 if result.ok else 1
+
+
+def cmd_generate_java(args: argparse.Namespace) -> int:
+    """Generate Java code from CDM JSON using agent loop."""
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    from .java_gen.agent import run_agent, AgentConfig
+
+    err = sys.stderr
+    err.write(f"\n[1/2] Initializing agent for {args.input}...\n")
+
+    config = AgentConfig(
+        max_iterations=args.max_iterations,
+        max_tool_calls=args.max_tool_calls,
+        timeout_seconds=args.timeout,
+    )
+
+    if getattr(args, "provider", "openrouter") == "openai":
+        try:
+            import openai
+            client = openai.OpenAI(
+                api_key=getattr(args, "api_key", None) or None,
+                base_url=getattr(args, "base_url", None) or None,
+            )
+        except ImportError:
+            err.write("  FAIL: openai package not installed. Run: pip install openai\n")
+            return 2
+    else:
+        import os
+        from .java_gen.openrouter_client import OpenRouterClient
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            err.write("  FAIL: OPENROUTER_API_KEY not set. Set it in .env or the environment.\n")
+            return 2
+        try:
+            client = OpenRouterClient(api_key=api_key)
+        except ValueError as e:
+            err.write(f"  FAIL: {e}\n")
+            return 2
+
+    err.write(f"  Model: {args.model}\n")
+    err.write(f"  Max iterations: {config.max_iterations}\n")
+    err.write(f"\n[2/2] Running agent loop...\n")
+
+    log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
+    result = run_agent(
+        cdm_json_path=args.input,
+        llm_client=client,
+        model=args.model,
+        config=config,
+        log_progress=log_progress,
+    )
+
+    err.write(f"\nAgent completed in {result.duration_seconds:.1f}s\n")
+    err.write(f"  Iterations:  {result.iterations}\n")
+    err.write(f"  Tool calls:  {result.total_tool_calls}\n")
+    err.write(f"  Match:       {result.match_percentage}%\n")
+    err.write(f"  Status:      {'SUCCESS' if result.success else 'FAILURE'}\n")
+    err.write(f"  Summary:     {result.summary}\n")
+
+    if args.trace_output:
+        _write_json({"trace": result.trace, "result": result.to_dict()}, args.trace_output)
+        err.write(f"  Trace:       {args.trace_output}\n")
+
+    if result.java_file:
+        err.write(f"  Java file:   {result.java_file}\n")
+
+    return 0 if result.success else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,6 +326,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate_schema_parser.add_argument("--output", "-o", help="Validation report JSON file")
     validate_schema_parser.set_defaults(func=cmd_validate_schema)
 
+    rosetta_parser = subparsers.add_parser("validate-rosetta", help="Validate CDM JSON against Rosetta type system (requires Java)")
+    rosetta_parser.add_argument("input", help="CDM JSON file to validate")
+    rosetta_parser.add_argument("--type", choices=("trade", "tradeState"), default="trade", help="CDM root type (default: trade)")
+    rosetta_parser.add_argument("--timeout", type=int, default=60, help="Timeout in seconds (default: 60)")
+    rosetta_parser.add_argument("--output", "-o", help="Validation report JSON file")
+    rosetta_parser.add_argument("--verbose", "-v", action="store_true", help="Show rule definitions and CDM structure details")
+    rosetta_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress JSON output to stdout (diagnostic still goes to stderr)")
+    rosetta_parser.set_defaults(func=cmd_validate_rosetta)
+
     convert_parser = subparsers.add_parser("convert", help="Run parse -> transform -> validate")
     convert_parser.add_argument("input", help="Input FpML XML file")
     convert_parser.add_argument("--output", "-o", help="Output full conversion result JSON")
@@ -129,6 +346,23 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--llm-base-url", default="http://localhost:11434/v1", help="Base URL for openai_compat provider (default: http://localhost:11434/v1)")
     convert_parser.add_argument("--llm-model", default="llama3.2", help="Model name for LLM provider (default: llama3.2)")
     convert_parser.set_defaults(func=cmd_convert)
+
+    java_gen_parser = subparsers.add_parser(
+        "generate-java",
+        help="Generate Java code from CDM JSON using agent loop (OpenRouter by default)",
+    )
+    java_gen_parser.add_argument("input", help="CDM JSON file")
+    java_gen_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
+    java_gen_parser.add_argument("--model", default="minimax/minimax-m2.5", help="LLM model name (default: minimax/minimax-m2.5)")
+    java_gen_parser.add_argument("--api-key", default=None, help="API key (for --provider openai: OpenAI key; else ignored)")
+    java_gen_parser.add_argument("--base-url", default=None, help="Base URL (for --provider openai only)")
+    java_gen_parser.add_argument("--max-iterations", type=int, default=20, help="Max agent iterations (default: 20)")
+    java_gen_parser.add_argument("--max-tool-calls", type=int, default=50, help="Max total tool calls (default: 50)")
+    java_gen_parser.add_argument("--timeout", type=int, default=600, help="Agent timeout in seconds; increase for large CDM or slow models (default: 600)")
+    java_gen_parser.add_argument("--trace-output", help="Write agent trace JSON to file")
+    java_gen_parser.add_argument("--verbose", "-v", action="store_true", help="Always show per-tool and LLM timing logs")
+    java_gen_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-tool and LLM timing logs (default: show when stderr is a TTY)")
+    java_gen_parser.set_defaults(func=cmd_generate_java)
 
     return parser
 

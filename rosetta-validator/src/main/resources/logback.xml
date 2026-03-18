@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%level %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Suppress noisy CDM/Guice/Rosetta startup logs -->
+    <logger name="com.regnosys" level="WARN"/>
+    <logger name="com.rosetta" level="WARN"/>
+    <logger name="org.finos.cdm" level="WARN"/>
+    <logger name="com.google.inject" level="WARN"/>
+
+    <root level="WARN">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>

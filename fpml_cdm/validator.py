@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .cdm_official_schema import get_trade_schema_validator
 from .parser import parse_fpml_fx
 from .types import (
     ErrorCode,
@@ -58,6 +59,34 @@ def validate_schema_file(schema_name: str, json_path: str) -> List[ValidationIss
     return validate_schema_data(schema_name, data)
 
 
+def validate_cdm_official_schema(trade_dict: Dict[str, Any]) -> List[ValidationIssue]:
+    """
+    Validate a CDM Trade object against the official FINOS CDM JSON Schemas.
+    """
+    try:
+        validator = get_trade_schema_validator()
+    except Exception as exc:
+        return [
+            ValidationIssue(
+                code=ErrorCode.SCHEMA_VALIDATION_FAILED.value,
+                message=f"Failed to load official CDM Trade schema: {exc}",
+                path="<schema>",
+            )
+        ]
+
+    issues: List[ValidationIssue] = []
+    for err in sorted(validator.iter_errors(trade_dict), key=lambda e: list(e.path)):
+        path = ".".join(str(p) for p in err.path) or "<root>"
+        issues.append(
+            ValidationIssue(
+                code=ErrorCode.SCHEMA_VALIDATION_FAILED.value,
+                message=err.message,
+                path=path,
+            )
+        )
+    return issues
+
+
 def _float_equal(left: Optional[float], right: Optional[float], tol: float) -> bool:
     if left is None or right is None:
         return False
@@ -68,19 +97,13 @@ def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -
     issues: List[ValidationIssue] = []
 
     trade = cdm_data.get("trade", {})
-    tradable_product = trade.get("tradableProduct", {})
-    trade_lot = (tradable_product.get("tradeLot", [{}]) or [{}])[0]
+    trade_lot = (trade.get("tradeLot", [{}]) or [{}])[0]
     price_quantity = (trade_lot.get("priceQuantity", [{}]) or [{}])[0]
     quantities = price_quantity.get("quantity", []) or []
     prices = price_quantity.get("price", []) or []
-    settlement_payout = (
-        tradable_product
-        .get("product", {})
-        .get("nonTransferableProduct", {})
-        .get("economicTerms", {})
-        .get("payout", {})
-        .get("settlementPayout", [{}])
-    )[0]
+    payout_list = trade.get("product", {}).get("economicTerms", {}).get("payout", [])
+    first_payout = payout_list[0] if payout_list else {}
+    settlement_payout = first_payout.get("SettlementPayout", {})
     settlement_terms = settlement_payout.get("settlementTerms", {})
 
     checks_total = 0
@@ -106,36 +129,34 @@ def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -
     cdm_settlement_date = (
         settlement_terms
         .get("settlementDate", {})
-        .get("adjustableOrAdjustedDate", {})
-        .get("unadjustedDate", {})
-        .get("value")
+        .get("valueDate")
     )
     check(
         cdm_settlement_date == model.valueDate,
         f"Value date mismatch: model={model.valueDate}, cdm={cdm_settlement_date}",
-        "trade.tradableProduct.product.nonTransferableProduct.economicTerms.payout.settlementPayout[0].settlementTerms.settlementDate.adjustableOrAdjustedDate.unadjustedDate.value",
+        "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementDate.valueDate",
     )
 
     expected_settlement_enum = {
-        "PHYSICAL": "SettlementTypeEnum.PHYSICAL",
-        "CASH": "SettlementTypeEnum.CASH",
-        "REGULAR": "SettlementTypeEnum.REGULAR",
-    }.get(model.settlementType, "SettlementTypeEnum.PHYSICAL")
+        "PHYSICAL": "Physical",
+        "CASH": "Cash",
+        "REGULAR": "Physical",
+    }.get(model.settlementType, "Physical")
     cdm_settlement_type = settlement_terms.get("settlementType")
     check(
         cdm_settlement_type == expected_settlement_enum,
         f"Settlement type mismatch: model={expected_settlement_enum}, cdm={cdm_settlement_type}",
-        "trade.tradableProduct.product.nonTransferableProduct.economicTerms.payout.settlementPayout[0].settlementTerms.settlementType",
+        "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementType",
     )
 
     quantity1 = quantities[0] if len(quantities) > 0 else {}
     quantity2 = quantities[1] if len(quantities) > 1 else {}
 
-    cdm_currency1 = quantity1.get("unit", {}).get("currency", {}).get("value")
-    cdm_currency2 = quantity2.get("unit", {}).get("currency", {}).get("value")
+    cdm_currency1 = quantity1.get("value", {}).get("unit", {}).get("currency", {}).get("value")
+    cdm_currency2 = quantity2.get("value", {}).get("unit", {}).get("currency", {}).get("value")
 
-    check(cdm_currency1 == model.currency1, f"Currency1 mismatch: model={model.currency1}, cdm={cdm_currency1}", "trade.tradableProduct.tradeLot[0].priceQuantity[0].quantity[0].unit.currency.value")
-    check(cdm_currency2 == model.currency2, f"Currency2 mismatch: model={model.currency2}, cdm={cdm_currency2}", "trade.tradableProduct.tradeLot[0].priceQuantity[0].quantity[1].unit.currency.value")
+    check(cdm_currency1 == model.currency1, f"Currency1 mismatch: model={model.currency1}, cdm={cdm_currency1}", "trade.tradeLot[0].priceQuantity[0].quantity[0].unit.currency.value")
+    check(cdm_currency2 == model.currency2, f"Currency2 mismatch: model={model.currency2}, cdm={cdm_currency2}", "trade.tradeLot[0].priceQuantity[0].quantity[1].unit.currency.value")
 
     cdm_amount1 = quantity1.get("value", {}).get("value")
     cdm_amount2 = quantity2.get("value", {}).get("value")
@@ -143,33 +164,34 @@ def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -
     check(
         _float_equal(model.amount1, float(cdm_amount1) if cdm_amount1 is not None else None, 0.01),
         f"Amount1 mismatch: model={model.amount1}, cdm={cdm_amount1}",
-        "trade.tradableProduct.tradeLot[0].priceQuantity[0].quantity[0].value.value",
+        "trade.tradeLot[0].priceQuantity[0].quantity[0].value",
     )
     check(
         _float_equal(model.amount2, float(cdm_amount2) if cdm_amount2 is not None else None, 0.01),
         f"Amount2 mismatch: model={model.amount2}, cdm={cdm_amount2}",
-        "trade.tradableProduct.tradeLot[0].priceQuantity[0].quantity[1].value.value",
+        "trade.tradeLot[0].priceQuantity[0].quantity[1].value",
     )
 
     if model.exchangeRate is not None:
         price = prices[0] if prices else {}
-        cdm_rate = price.get("value", {}).get("value")
-        cdm_quote = price.get("unit", {}).get("currency", {}).get("value")
-        cdm_base = price.get("perUnitOf", {}).get("currency", {}).get("value")
+        price_inner = price.get("value", {})
+        cdm_rate = price_inner.get("value")
+        cdm_quote = price_inner.get("unit", {}).get("currency", {}).get("value")
+        cdm_base = price_inner.get("perUnitOf", {}).get("currency", {}).get("value")
         check(
             _float_equal(model.exchangeRate, float(cdm_rate) if cdm_rate is not None else None, 0.0001),
             f"Exchange rate mismatch: model={model.exchangeRate}, cdm={cdm_rate}",
-            "trade.tradableProduct.tradeLot[0].priceQuantity[0].price[0].value.value",
+            "trade.tradeLot[0].priceQuantity[0].price[0].value",
         )
         check(
             cdm_quote == model.currency2,
             f"Rate quote currency mismatch: model={model.currency2}, cdm={cdm_quote}",
-            "trade.tradableProduct.tradeLot[0].priceQuantity[0].price[0].unit.currency.value",
+            "trade.tradeLot[0].priceQuantity[0].price[0].unit.currency.value",
         )
         check(
             cdm_base == model.currency1,
             f"Rate base currency mismatch: model={model.currency1}, cdm={cdm_base}",
-            "trade.tradableProduct.tradeLot[0].priceQuantity[0].price[0].perUnitOf.currency.value",
+            "trade.tradeLot[0].priceQuantity[0].price[0].perUnitOf.currency.value",
         )
 
     if model.settlementType == "CASH":
@@ -177,23 +199,27 @@ def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -
         check(
             cdm_settlement_currency == model.settlementCurrency,
             f"Settlement currency mismatch: model={model.settlementCurrency}, cdm={cdm_settlement_currency}",
-            "trade.tradableProduct.product.nonTransferableProduct.economicTerms.payout.settlementPayout[0].settlementTerms.settlementCurrency.value",
+            "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementCurrency.value",
         )
 
     payer_receiver = settlement_payout.get("payerReceiver", {})
+    counterparties = {cp.get("partyReference", {}).get("globalReference"): cp.get("role")
+                      for cp in trade.get("counterparty", [])}
     if model.buyerPartyReference:
-        cdm_payer = payer_receiver.get("payer", {}).get("globalReference")
+        expected_payer_role = counterparties.get(model.buyerPartyReference, "Party1")
+        cdm_payer = payer_receiver.get("payer")
         check(
-            cdm_payer == model.buyerPartyReference,
-            f"payer reference mismatch: model={model.buyerPartyReference}, cdm={cdm_payer}",
-            "trade.tradableProduct.product.nonTransferableProduct.economicTerms.payout.settlementPayout[0].payerReceiver.payer.globalReference",
+            cdm_payer == expected_payer_role,
+            f"payer role mismatch: model={expected_payer_role}, cdm={cdm_payer}",
+            "trade.product.economicTerms.payout[0].SettlementPayout.payerReceiver.payer",
         )
     if model.sellerPartyReference:
-        cdm_receiver = payer_receiver.get("receiver", {}).get("globalReference")
+        expected_receiver_role = counterparties.get(model.sellerPartyReference, "Party2")
+        cdm_receiver = payer_receiver.get("receiver")
         check(
-            cdm_receiver == model.sellerPartyReference,
-            f"receiver reference mismatch: model={model.sellerPartyReference}, cdm={cdm_receiver}",
-            "trade.tradableProduct.product.nonTransferableProduct.economicTerms.payout.settlementPayout[0].payerReceiver.receiver.globalReference",
+            cdm_receiver == expected_receiver_role,
+            f"receiver role mismatch: model={expected_receiver_role}, cdm={cdm_receiver}",
+            "trade.product.economicTerms.payout[0].SettlementPayout.payerReceiver.receiver",
         )
 
     accuracy = (checks_matched / checks_total) * 100 if checks_total else 0.0
@@ -223,7 +249,8 @@ def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> Validati
     normalized_schema_errors = validate_schema_data("fpml_fx_forward_parsed.schema.json", normalized.to_dict())
     errors.extend(normalized_schema_errors)
 
-    cdm_schema_errors = validate_schema_data("cdm_fx_forward.schema.json", cdm_obj)
+    trade_dict = cdm_obj.get("trade", {})
+    cdm_schema_errors = validate_cdm_official_schema(trade_dict)
     errors.extend(cdm_schema_errors)
 
     semantic_errors, mapping_score = _semantic_validation(normalized, cdm_obj)

@@ -11,7 +11,10 @@
               "value": "FX2024060100123"
             }
           }
-        ]
+        ],
+        "issuer": {
+          "value": "party1"
+        }
       }
     ],
     "party": [
@@ -40,46 +43,80 @@
         }
       }
     ],
-    "tradableProduct": {
-      "product": {
-        "nonTransferableProduct": {
-          "economicTerms": {
-            "payout": {
-              "settlementPayout": [
-                {
-                  "settlementTerms": {
-                    "settlementDate": {
-                      "adjustableOrAdjustedDate": {
-                        "unadjustedDate": {
-                          "value": "2024-09-01"
-                        }
+    "counterparty": [
+      {
+        "role": "Party1",
+        "partyReference": {
+          "globalReference": "party1"
+        }
+      },
+      {
+        "role": "Party2",
+        "partyReference": {
+          "globalReference": "party2"
+        }
+      }
+    ],
+    "partyRole": [
+      {
+        "role": "Buyer",
+        "partyReference": {
+          "globalReference": "party1"
+        }
+      },
+      {
+        "role": "Seller",
+        "partyReference": {
+          "globalReference": "party2"
+        }
+      }
+    ],
+    "product": {
+      "economicTerms": {
+        "payout": [
+          {
+            "SettlementPayout": {
+              "payerReceiver": {
+                "payer": "Party1",
+                "receiver": "Party2"
+              },
+              "settlementTerms": {
+                "settlementDate": {
+                  "valueDate": "2024-09-01"
+                },
+                "settlementType": "Physical"
+              },
+              "underlier": {
+                "Observable": {
+                  "value": {
+                    "Asset": {
+                      "Cash": {
+                        "identifier": [
+                          {
+                            "identifier": {
+                              "value": "USD"
+                            },
+                            "identifierType": "CurrencyCode"
+                          }
+                        ]
                       }
-                    },
-                    "settlementType": "SettlementTypeEnum.PHYSICAL"
-                  },
-                  "payerReceiver": {
-                    "payer": {
-                      "globalReference": "party1"
-                    },
-                    "receiver": {
-                      "globalReference": "party2"
                     }
                   }
                 }
-              ]
+              }
             }
           }
-        }
-      },
-      "tradeLot": [
-        {
-          "priceQuantity": [
-            {
-              "price": [
-                {
-                  "value": {
-                    "value": 1.09
-                  },
+        ]
+      }
+    },
+    "tradeLot": [
+      {
+        "priceQuantity": [
+          {
+            "price": [
+              {
+                "value": {
+                  "value": 1.09,
                   "unit": {
                     "currency": {
                       "value": "EUR"
@@ -89,35 +126,36 @@
                     "currency": {
                       "value": "USD"
                     }
-                  }
-                }
-              ],
-              "quantity": [
-                {
-                  "value": {
-                    "value": 10000000.0
                   },
+                  "priceType": "ExchangeRate"
+                }
+              }
+            ],
+            "quantity": [
+              {
+                "value": {
+                  "value": 10000000.0,
                   "unit": {
                     "currency": {
                       "value": "USD"
                     }
                   }
-                },
-                {
-                  "value": {
-                    "value": 9174311.93
-                  },
+                }
+              },
+              {
+                "value": {
+                  "value": 9174311.93,
                   "unit": {
                     "currency": {
                       "value": "EUR"
                     }
                   }
                 }
-              ]
-            }
-          ]
-        }
-      ]
-    }
+              }
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

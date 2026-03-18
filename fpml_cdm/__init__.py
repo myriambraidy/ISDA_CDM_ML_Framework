@@ -11,6 +11,7 @@ from .types import (
     ValidationReport,
 )
 from .validator import validate_conversion_files, validate_schema_data, validate_transformation
+from .rosetta_validator import RosettaValidationResult, validate_cdm_rosetta
 
 __all__ = [
     "SUPPORTED_PRODUCTS",
@@ -20,12 +21,14 @@ __all__ = [
     "validate_transformation",
     "validate_schema_data",
     "validate_conversion_files",
+    "validate_cdm_rosetta",
     "convert_fpml_to_cdm",
     "ConversionResult",
     "ErrorCode",
     "MappingScore",
     "NormalizedFxForward",
     "ParserError",
+    "RosettaValidationResult",
     "ValidationIssue",
     "ValidationReport",
 ]
