@@ -353,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     java_gen_parser.add_argument("input", help="CDM JSON file")
     java_gen_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
-    java_gen_parser.add_argument("--model", default="google/gemini-2.5-flash", help="LLM model name (default: google/gemini-2.5-flash)")
+    java_gen_parser.add_argument("--model", default="minimax/minimax-m2.5", help="LLM model name (default: minimax/minimax-m2.5)")
     java_gen_parser.add_argument("--api-key", default=None, help="API key (for --provider openai: OpenAI key; else ignored)")
     java_gen_parser.add_argument("--base-url", default=None, help="Base URL (for --provider openai only)")
     java_gen_parser.add_argument("--max-iterations", type=int, default=20, help="Max agent iterations (default: 20)")

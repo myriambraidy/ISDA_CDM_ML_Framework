@@ -238,6 +238,17 @@ def run_agent(
     consecutive_text_only = 0
     total_tool_time = 0.0
     total_llm_time = 0.0
+    # Ensure a clean starting point for patch-based generation.
+    # The LLM often follows a "patch placeholders" strategy; if an old generated file
+    # exists without placeholders, patching fails and the agent can loop until timeout.
+    try:
+        template = get_java_template().get("template", "")
+        if isinstance(template, str) and template.strip():
+            write_java_file(template, filename="CdmTradeBuilder.java")
+    except Exception:
+        # Don't fail Java generation just because template write failed;
+        # the agent can still choose to write a full file directly.
+        pass
 
     messages: List[Dict[str, object]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -245,6 +256,7 @@ def run_agent(
             "role": "user",
             "content": (
                 f"Generate Java code that builds the CDM trade defined in: {cdm_json_path}\n"
+                f"Use that exact path when calling tools (especially inspect_cdm_json).\n"
                 f"The code must compile against the CDM classpath and produce JSON output "
                 f"matching the input file when executed."
             ),

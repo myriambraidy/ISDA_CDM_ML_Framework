@@ -80,3 +80,4 @@ data/corpus/reports/
 # (re-created via make generate-java)
 # ------------------------
 generated/
+tmp/
