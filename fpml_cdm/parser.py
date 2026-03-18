@@ -275,59 +275,30 @@ def parse_fpml_root(
             if trade_id:
                 trade_identifiers.append({"tradeId": trade_id})
 
-    curr1_node = _find_child_local(product_node, "exchangedCurrency1")
-    curr2_node = _find_child_local(product_node, "exchangedCurrency2")
-    curr1_payment = _find_child_local(curr1_node, "paymentAmount")
-    curr2_payment = _find_child_local(curr2_node, "paymentAmount")
+    # Ruleset-driven extraction: evaluate candidate paths deterministically.
+    from .ruleset_engine import extract_fx_product_fields
+    from .rulesets import get_base_ruleset
 
-    currency1 = _parse_currency(
-        _text(_find_child_local(curr1_payment, "currency")),
-        "trade/product/exchangedCurrency1/paymentAmount/currency",
-        issues,
-    )
-    amount1 = _parse_amount(
-        _text(_find_child_local(curr1_payment, "amount")),
-        "trade/product/exchangedCurrency1/paymentAmount/amount",
-        issues,
+    ruleset = get_base_ruleset(source_product)
+    product_fields = extract_fx_product_fields(
+        product_node=product_node,
+        adapter_id=source_product,
+        ruleset=ruleset,
+        issues=issues,
     )
 
-    currency2 = _parse_currency(
-        _text(_find_child_local(curr2_payment, "currency")),
-        "trade/product/exchangedCurrency2/paymentAmount/currency",
-        issues,
-    )
-    amount2 = _parse_amount(
-        _text(_find_child_local(curr2_payment, "amount")),
-        "trade/product/exchangedCurrency2/paymentAmount/amount",
-        issues,
-    )
+    value_date = product_fields.get("valueDate")
+    currency1 = product_fields.get("currency1")
+    amount1 = product_fields.get("amount1")
+    currency2 = product_fields.get("currency2")
+    amount2 = product_fields.get("amount2")
+    exchange_rate = product_fields.get("exchangeRate")
 
-    exchange_rate: Optional[float] = None
-    exchange_rate_node = _find_child_local(product_node, "exchangeRate")
-    rate_text = _text(_find_child_local(exchange_rate_node, "rate"))
-    if rate_text is not None:
-        exchange_rate = _parse_amount(rate_text, "trade/product/exchangeRate/rate", issues)
+    settlement_type = product_fields.get("settlementType") or "PHYSICAL"
+    settlement_currency = product_fields.get("settlementCurrency")
 
-    value_date_raw = _text(_find_child_local(product_node, "valueDate"))
-    value_date = _parse_date(value_date_raw, "trade/product/valueDate", issues)
-
-    settlement_type = "PHYSICAL"
-    settlement_currency: Optional[str] = None
-    ndf_node = _find_child_local(product_node, "nonDeliverableSettlement")
-    if ndf_node is None:
-        ndf_node = _find_child_local(product_node, "nonDeliverableForward")
-    if ndf_node is not None:
-        settlement_type = "CASH"
-        settlement_currency = _parse_currency(
-            _text(_find_child_local(ndf_node, "settlementCurrency")),
-            "trade/product/nonDeliverableSettlement/settlementCurrency",
-            issues,
-        )
-
-    buyer_ref = _find_child_local(product_node, "buyerPartyReference")
-    seller_ref = _find_child_local(product_node, "sellerPartyReference")
-    buyer_party_reference = buyer_ref.get("href") if buyer_ref is not None else None
-    seller_party_reference = seller_ref.get("href") if seller_ref is not None else None
+    buyer_party_reference = product_fields.get("buyerPartyReference")
+    seller_party_reference = product_fields.get("sellerPartyReference")
 
     parties = []
     for party in _iter_descendants_local(root, "party"):

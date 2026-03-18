@@ -111,3 +111,208 @@ Use this list when implementing; check off items as done. Do not implement Phase
 - [x] **3.1** In `agent.py`, add or tighten the “Efficiency” section in `SYSTEM_PROMPT`: e.g. first 1–2 turns after inspect and get_java_template, call ALL lookup_cdm_schema and list_enum_values in parallel; do not call write_java_file until schema/enum info is gathered.
 - [x] **3.2** (Optional) In `tools.json`, shorten long `description` strings for tools; keep parameters and semantics unchanged. _(Skipped: left descriptions as-is to avoid any behavior change.)_
 - [x] **3.3** Run full agent and openrouter client tests; all pass.
+
+---
+
+# Plan: FpML FX-family → CDM v6 → ISDA CDM Java (Agentic)
+
+## What we build
+An end-to-end pipeline that takes an FX-family FpML XML file and produces:
+1. A **CDM v6** intermediate JSON shaped like `{"trade": {...}}`.
+2. **Executable Java** source code (ISDA CDM builders) that reconstructs that best CDM instance.
+3. An **agentic mapping loop** that can iteratively improve mapping via *structured ruleset patches*, using tool calls with a tool registry.
+
+The pipeline has three phases and is deterministic by default.
+
+## Phase A — Deterministic parse/transform/validate (first pass)
+Given an FpML XML file:
+1. Detect which **supported FX adapter** exists under the `<trade>` subtree:
+   - `fxForward`
+   - `fxSingleLeg`
+2. Parse using a **ruleset-driven deterministic extractor** (no LLM):
+   - `fpml_cdm/rulesets.py` defines per-adapter candidate paths for normalized fields.
+   - `fpml_cdm/ruleset_engine.py` evaluates candidates in order and parses with existing helpers:
+     - `_normalize_date_only`
+     - `_parse_amount`
+     - `_parse_currency`
+3. Transform normalized output into CDM v6:
+   - `fpml_cdm/transformer.py::transform_to_cdm_v6`
+4. Validate:
+   - Normalized JSON schema:
+     - `fpml_cdm/validator.py::validate_schema_data("fpml_fx_forward_parsed.schema.json", ...)`
+   - CDM official Trade schema:
+     - `fpml_cdm/validator.py::validate_cdm_official_schema(trade_dict)`
+   - Semantic cross-check (field-by-field):
+     - `fpml_cdm/validator.py::_semantic_validation(normalized, cdm)`
+   - Rosetta type validator is optional/best-effort (not required for convergence in this version).
+
+If validation passes, we do **not** run the mapping agent.
+
+## Phase B — Agentic mapping loop (tool-constrained)
+If validation fails (or deterministic parsing produced insufficient data), we run an LLM loop that:
+1. Calls tools (no freeform CDM synthesis).
+2. Proposes **structured patches** to the mapping rulesets.
+3. Re-runs deterministic parse/transform/validate for each patch.
+4. Keeps the **best-so-far** CDM JSON even if validation doesn’t reach perfection.
+
+### Tool registry requirement (central design)
+The mapping agent must use:
+- OpenAI-compatible `tools=[...]` specs
+- A dispatch registry `tool_name -> handler`
+- JSON-serializable tool outputs only
+
+Implementation (current code):
+`fpml_cdm/mapping_agent/registry.py`
+```python
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    description: str
+    json_schema: Dict[str, Any]
+    handler: Callable[..., Dict[str, Any]]
+
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools: Dict[str, ToolSpec] = {}
+
+    def register(self, spec: ToolSpec) -> None:
+        self._tools[spec.name] = spec
+
+    def tool_definitions_for_llm(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.json_schema,
+                },
+            }
+            for t in self._tools.values()
+        ]
+
+    def dispatch(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        return self._tools[name].handler(**args)
+```
+
+### Mapping tools (current tool contracts)
+Implementation: `fpml_cdm/mapping_agent/tools.py`
+
+Tools exposed to the LLM:
+1. `inspect_fpml_trade(fpml_path: str) -> { tradeDate, product_candidates: [...] }`
+2. `get_active_ruleset_summary(adapter_id: str) -> { adapter_id, fields, derived }`
+3. `run_conversion_with_patch(fpml_path: str, adapter_id: str, patch: object) -> { cdm_json, normalized, validation_report, validation_summary, ... }`
+4. `validate_best_effort(fpml_path: str, cdm_json: object, enable_rosetta?: bool, rosetta_timeout_seconds?: int) -> ValidationReport + best-effort rosetta`
+
+### Structured patch schema (what the LLM is allowed to change)
+Deterministic patch application: `fpml_cdm/ruleset_engine.py::apply_ruleset_patch()`
+
+Supported patch shape:
+```json
+{
+  "fields": {
+    "<fieldName>": {
+      "candidates_order": ["<candidatePath>", "..."],
+      "candidates_add": ["<candidatePath>", "..."],
+      "required": true
+    }
+  },
+  "derived": {
+    "<derivedField>": {
+      "enabled": true
+    }
+  }
+}
+```
+
+Compatibility:
+- `fields.<field>.candidates` is accepted as an alias for `candidates_order`.
+- `exchangeRate` derived can be enabled via the derived section (currently disabled by default to keep baseline deterministic behavior identical).
+
+### Agent loop scoring + stopping
+`fpml_cdm/mapping_agent/agent.py::run_mapping_agent()`
+
+Best-so-far selection metric:
+1. Primary: `schema_error_count`
+2. Secondary: `semantic_error_count`
+
+Stopping:
+- Stop early if both counts are `0`
+- Stop if no improvement after `semantic_no_improve_limit` tool results
+- Hard limits:
+  - `max_iterations`
+  - `max_tool_calls`
+  - `timeout_seconds`
+
+## Phase C — Java code generation (existing agent approach)
+Once we have the **best** CDM JSON:
+1. Write it to `output_dir/generated_expected_cdm.json` (temp artifact).
+2. Call the existing Java agent:
+   - `fpml_cdm/java_gen/agent.py::run_agent(cdm_json_path=..., llm_client=..., model=..., config=...)`
+3. The Java agent writes:
+   - `generated/CdmTradeBuilder.java`
+4. It also compiles, runs, and diffs emitted JSON vs expected, reporting:
+   - `success`
+   - `match_percentage`
+   - trace events (optional via `--trace-output`)
+
+## CLI: `generate-java-from-fpml`
+Implemented in `fpml_cdm/cli.py` with command:
+```bash
+python -m fpml_cdm generate-java-from-fpml <fpml.xml> [options...]
+```
+
+### LLM provider/model flags
+- `--provider {openrouter,openai}` (default: `openrouter`)
+- `--model <name>` (default: `minimax/minimax-m2.5`) used for both mapping + Java codegen
+- `--mapping-model <name>` optional override for mapping agent
+- `--api-key` and `--base-url` for `--provider openai`
+- `OPENROUTER_API_KEY` must be set for `--provider openrouter`
+
+### Mapping controls
+- `--no-mapping-agent`: skip Phase B and use deterministic CDM even if validation fails
+- `--mapping-max-iterations` (default: 10)
+- `--mapping-max-tool-calls` (default: 80)
+- `--mapping-timeout` (default: 300)
+
+### Java codegen controls
+- `--max-iterations` (default: 20)
+- `--max-tool-calls` (default: 50)
+- `--timeout` (default: 600)
+
+### Output artifacts / contract
+Given `--output-dir <dir>` (default: `tmp`):
+1. Deterministic + agent best CDM:
+   - `<dir>/generated_expected_cdm.json`
+2. If mapping agent ran:
+   - `<dir>/mapping_trace.json` with:
+     - `mapping_result` summary
+     - `trace`
+     - `best_cdm_json_path`
+3. Java output (always from java agent):
+   - `generated/CdmTradeBuilder.java`
+4. Optional Java trace:
+   - `--trace-output <file>` writes:
+     - `{"trace": ..., "result": ...}` from the Java agent
+
+### Exit codes
+- Returns `0` if Java agent `result.success == True`
+- Returns `1` otherwise
+- Returns `2` on LLM provider initialization errors (e.g. missing OPENROUTER_API_KEY)
+
+## Codebase touch points (what to look at)
+- Deterministic rulesets:
+  - `fpml_cdm/rulesets.py`
+  - `fpml_cdm/ruleset_engine.py`
+- Deterministic parsing:
+  - `fpml_cdm/parser.py` (now ruleset-driven extraction)
+- Deterministic validation:
+  - `fpml_cdm/validator.py`
+- Agentic mapping:
+  - `fpml_cdm/mapping_agent/registry.py`
+  - `fpml_cdm/mapping_agent/tools.py`
+  - `fpml_cdm/mapping_agent/agent.py`
+- Java codegen integration orchestrator:
+  - `fpml_cdm/fpml_to_cdm_java.py`
+- CLI:
+  - `fpml_cdm/cli.py`

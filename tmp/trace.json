@@ -29,6 +29,76 @@
     {
       "iteration": 1,
       "type": "tool_call",
+      "tool": "lookup_cdm_schema",
+      "args": {
+        "type_name": "Trade"
+      }
+    },
+    {
+      "iteration": 1,
+      "type": "tool_result",
+      "tool": "lookup_cdm_schema",
+      "result_preview": "{\"type_name\": \"Trade\", \"schema_file\": \"cdm-event-common-Trade.schema.json\", \"java_class\": \"cdm.event.common.Trade\", \"java_package\": \"cdm.event.common\", \"description\": \"Defines the output of a financial transaction between parties - a Business Event. A Trade impacts the financial position (i.e. the balance sheet) of involved parties.\", \"properties\": {\"product\": {\"type\": \"object\", \"ref\": \"cdm-product-template-NonTransferableProduct.schema.json\", \"java_class\": \"cdm.product.template.NonTransferableP"
+    },
+    {
+      "iteration": 1,
+      "type": "tool_call",
+      "tool": "lookup_cdm_schema",
+      "args": {
+        "type_name": "NonTransferableProduct"
+      }
+    },
+    {
+      "iteration": 1,
+      "type": "tool_result",
+      "tool": "lookup_cdm_schema",
+      "result_preview": "{\"type_name\": \"NonTransferableProduct\", \"schema_file\": \"cdm-product-template-NonTransferableProduct.schema.json\", \"java_class\": \"cdm.product.template.NonTransferableProduct\", \"java_package\": \"cdm.product.template\", \"description\": \"A data type to specify the financial product's economic terms, alongside the product identification and product taxonomy. The non-transferable product data type represents a product that can be traded (as part of a TradableProduct) but cannot be transferred to others. "
+    },
+    {
+      "iteration": 1,
+      "type": "tool_call",
+      "tool": "lookup_cdm_schema",
+      "args": {
+        "type_name": "SettlementPayout"
+      }
+    },
+    {
+      "iteration": 1,
+      "type": "tool_result",
+      "tool": "lookup_cdm_schema",
+      "result_preview": "{\"type_name\": \"SettlementPayout\", \"schema_file\": \"cdm-product-template-SettlementPayout.schema.json\", \"java_class\": \"cdm.product.template.SettlementPayout\", \"java_package\": \"cdm.product.template\", \"description\": \"Represents a forward settling payout. The underlier attribute captures the underlying payout, which is settled according to the settlementTerms attribute (which is part of PayoutBase). Both FX Spot and FX Forward should use this component.\", \"properties\": {\"payerReceiver\": {\"type\": \"obj"
+    },
+    {
+      "iteration": 1,
+      "type": "tool_call",
+      "tool": "lookup_cdm_schema",
+      "args": {
+        "type_name": "Underlier"
+      }
+    },
+    {
+      "iteration": 1,
+      "type": "tool_result",
+      "tool": "lookup_cdm_schema",
+      "result_preview": "{\"type_name\": \"Underlier\", \"schema_file\": \"cdm-product-template-Underlier.schema.json\", \"java_class\": \"cdm.product.template.Underlier\", \"java_package\": \"cdm.product.template\", \"description\": \"The underlying financial product that will be physically or cash settled, which can be of any type, eg an asset such as cash or a security, a product, or the cash settlement of an index rate.  Conditions are usually applied when used in a data type, such as a payout, to ensure this aligns with the use case."
+    },
+    {
+      "iteration": 1,
+      "type": "tool_call",
+      "tool": "lookup_cdm_schema",
+      "args": {
+        "type_name": "ReferenceWithMetaObservable"
+      }
+    },
+    {
+      "iteration": 1,
+      "type": "tool_result",
+      "tool": "lookup_cdm_schema",
+      "result_preview": "{\"type_name\": \"ReferenceWithMetaObservable\", \"schema_file\": \"cdm-observable-asset-metafields-ReferenceWithMetaObservable.schema.json\", \"java_class\": \"cdm.observable.asset.metafields.ReferenceWithMetaObservable\", \"java_package\": \"cdm.observable.asset.metafields\", \"description\": \"\", \"properties\": {\"globalReference\": {\"type\": \"string\", \"ref\": null, \"java_class\": null, \"required\": false, \"is_array\": false, \"setter_hint\": \"setGlobalReference\", \"description\": \"\"}, \"externalReference\": {\"type\": \"string"
+    },
+    {
+      "iteration": 1,
+      "type": "tool_call",
       "tool": "list_enum_values",
       "args": {
         "enum_name": "CounterpartyRoleEnum"
@@ -87,45 +157,17 @@
       "type": "tool_call",
       "tool": "lookup_cdm_schema",
       "args": {
-        "type_name": "Underlier"
-      }
-    },
-    {
-      "iteration": 2,
-      "type": "tool_result",
-      "tool": "lookup_cdm_schema",
-      "result_preview": "{\"type_name\": \"Underlier\", \"schema_file\": \"cdm-product-template-Underlier.schema.json\", \"java_class\": \"cdm.product.template.Underlier\", \"java_package\": \"cdm.product.template\", \"description\": \"The underlying financial product that will be physically or cash settled, which can be of any type, eg an asset such as cash or a security, a product, or the cash settlement of an index rate.  Conditions are usually applied when used in a data type, such as a payout, to ensure this aligns with the use case."
-    },
-    {
-      "iteration": 2,
-      "type": "tool_call",
-      "tool": "lookup_cdm_schema",
-      "args": {
-        "type_name": "Observable"
-      }
-    },
-    {
-      "iteration": 2,
-      "type": "tool_result",
-      "tool": "lookup_cdm_schema",
-      "result_preview": "{\"type_name\": \"Observable\", \"schema_file\": \"cdm-observable-asset-Observable.schema.json\", \"java_class\": \"cdm.observable.asset.Observable\", \"java_package\": \"cdm.observable.asset\", \"description\": \"Specifies the object to be observed for a price, it could be an asset or a reference.\", \"properties\": {\"Asset\": {\"type\": \"object\", \"ref\": \"cdm-base-staticdata-asset-common-Asset.schema.json\", \"java_class\": \"cdm.base.staticdata.asset.common.Asset\", \"required\": false, \"is_array\": false, \"setter_hint\": \"set"
-    },
-    {
-      "iteration": 3,
-      "type": "tool_call",
-      "tool": "lookup_cdm_schema",
-      "args": {
         "type_name": "Asset"
       }
     },
     {
-      "iteration": 3,
+      "iteration": 2,
       "type": "tool_result",
       "tool": "lookup_cdm_schema",
       "result_preview": "{\"type_name\": \"Asset\", \"schema_file\": \"cdm-base-staticdata-asset-common-Asset.schema.json\", \"java_class\": \"cdm.base.staticdata.asset.common.Asset\", \"java_package\": \"cdm.base.staticdata.asset.common\", \"description\": \"An Asset is defined as something that can be owned and transferred in the financial markets. As a choice data type, one and only one of the attributes must be used.\", \"properties\": {\"Cash\": {\"type\": \"object\", \"ref\": \"cdm-base-staticdata-asset-common-Cash.schema.json\", \"java_class\": \""
     },
     {
-      "iteration": 4,
+      "iteration": 3,
       "type": "tool_call",
       "tool": "lookup_cdm_schema",
       "args": {
@@ -133,13 +175,13 @@
       }
     },
     {
-      "iteration": 4,
+      "iteration": 3,
       "type": "tool_result",
       "tool": "lookup_cdm_schema",
       "result_preview": "{\"type_name\": \"Cash\", \"schema_file\": \"cdm-base-staticdata-asset-common-Cash.schema.json\", \"java_class\": \"cdm.base.staticdata.asset.common.Cash\", \"java_package\": \"cdm.base.staticdata.asset.common\", \"description\": \"An Asset that consists solely of a monetary holding in a currency. The currency of the Cash asset is held in the string Identifier (from AssetBase) and the AssetIdTypeEnum must be set to define that a CurrencyCode is set.  The function SetCashCurrency can be used to create (or update) a"
     },
     {
-      "iteration": 5,
+      "iteration": 4,
       "type": "tool_call",
       "tool": "lookup_cdm_schema",
       "args": {
@@ -147,13 +189,13 @@
       }
     },
     {
-      "iteration": 5,
+      "iteration": 4,
       "type": "tool_result",
       "tool": "lookup_cdm_schema",
       "result_preview": "{\"type_name\": \"AssetIdentifier\", \"schema_file\": \"cdm-base-staticdata-asset-common-AssetIdentifier.schema.json\", \"java_class\": \"cdm.base.staticdata.asset.common.AssetIdentifier\", \"java_package\": \"cdm.base.staticdata.asset.common\", \"description\": \"The unique identifier for an Asset, specified using an Asset Identifier Type enumerator.\", \"properties\": {\"identifier\": {\"type\": \"object\", \"ref\": \"com-rosetta-model-metafields-FieldWithMetaString.schema.json\", \"java_class\": \"com.rosetta.model.metafields."
     },
     {
-      "iteration": 6,
+      "iteration": 5,
       "type": "tool_call",
       "tool": "list_enum_values",
       "args": {
@@ -161,24 +203,38 @@
       }
     },
     {
-      "iteration": 6,
+      "iteration": 5,
       "type": "tool_result",
       "tool": "list_enum_values",
       "result_preview": "{\"enum_name\": \"AssetIdTypeEnum\", \"java_class\": \"cdm.base.staticdata.asset.common.AssetIdTypeEnum\", \"java_package\": \"cdm.base.staticdata.asset.common\", \"import_statement\": \"import cdm.base.staticdata.asset.common.AssetIdTypeEnum;\", \"values\": [{\"json_value\": \"BBGID\", \"java_constant\": \"AssetIdTypeEnum.BBGID\"}, {\"json_value\": \"BBGTICKER\", \"java_constant\": \"AssetIdTypeEnum.BBGTICKER\"}, {\"json_value\": \"CUSIP\", \"java_constant\": \"AssetIdTypeEnum.CUSIP\"}, {\"json_value\": \"ClearingCode\", \"java_constant\": \""
+    },
+    {
+      "iteration": 6,
+      "type": "tool_call",
+      "tool": "lookup_cdm_schema",
+      "args": {
+        "type_name": "SettlementDate"
+      }
+    },
+    {
+      "iteration": 6,
+      "type": "tool_result",
+      "tool": "lookup_cdm_schema",
+      "result_preview": "{\"type_name\": \"SettlementDate\", \"schema_file\": \"cdm-product-common-settlement-SettlementDate.schema.json\", \"java_class\": \"cdm.product.common.settlement.SettlementDate\", \"java_package\": \"cdm.product.common.settlement\", \"description\": \"A data defining the settlement date(s) for cash or physical settlement as either a set of explicit dates, together with applicable adjustments, or as a date relative to some other (anchor) date, or as any date in a range of contiguous business days. This data type p"
     },
     {
       "iteration": 7,
       "type": "tool_call",
       "tool": "write_java_file",
       "args": {
-        "code": "import java.math.BigDecimal;\n\nimport com.rosetta.model.lib.records.Date;\nimport com.rosetta.model.metafields.FieldWithMetaDate;\nimport com.rosetta.model.metafields.FieldWithMetaString;\n\nimport cdm.base.staticdata.asset.common.Asset;\nimport cdm.base.staticdata.asset.common.AssetIdentifier;\nimport cdm.base.staticdata.asset.common.AssetIdTypeEnum;\nimport cdm.base.staticdata.asset.common.Cash;\nimport cdm.base.staticdata.identifier.AssignedIdentifier;\nimport cdm.base.staticdata.party.Counterparty;\nimport cdm.base.staticdata.party.CounterpartyRoleEnum;\nimport cdm.base.staticdata.party.Party;\nimport cdm.base.staticdata.party.PartyIdentifier;\nimport cdm.base.staticdata.party.PartyRole;\nimport cdm.base.staticdata.party.PartyRoleEnum;\nimport cdm.base.staticdata.party.PayerReceiver;\nimport cdm.base.staticdata.party.metafields.ReferenceWithMetaParty;\n\nimport cdm.event.common.Trade;\nimport cdm.event.common.TradeIdentifier;\n\nimport cdm.observable.asset.metafields.ReferenceWithMetaObservable;\nimport cdm.observable.asset.Observable;\nimport cdm.observable.asset.PriceQuantity;\nimport cdm.observable.asset.PriceSchedule;\nimport cdm.observable.asset.PriceTypeEnum;\nimport cdm.observable.asset.metafields.FieldWithMetaPriceSchedule;\n\nimport cdm.base.math.UnitType;\nimport cdm.base.math.NonNegativeQuantitySchedule;\nimport cdm.base.math.metafields.FieldWithMetaNonNegativeQuantitySchedule;\n\nimport cdm.product.common.settlement.SettlementDate;\nimport cdm.product.common.settlement.SettlementTerms;\nimport cdm.product.common.settlement.SettlementTypeEnum;\n\nimport cdm.product.template.EconomicTerms;\nimport cdm.product.template.NonTransferableProduct;\nimport cdm.product.template.Payout;\nimport cdm.product.template.SettlementPayout;\nimport cdm.product.template.TradeLot;\nimport cdm.product.template.Underlier;\n\npublic class CdmTradeBuilder {\n\n    public static Trade buildTrade() {\n        // tradeDate: 2001-11-12 - use FieldWithMetaDate with Date\n        FieldWithMetaDate tradeDate = FieldWithMetaDate.builder()\n            .setValue(Date.of(2001, 11, 12))\n            .build();\n\n        // TradeIdentifier[0]: FWD123 with issuer party1\n        AssignedIdentifier assignedId1 = AssignedIdentifier.builder()\n            .setIdentifier(FieldWithMetaString.builder().setValue(\"FWD123\").build())\n            .build();\n        \n        TradeIdentifier tradeIdentifier1 = TradeIdentifier.builder()\n            .addAssignedIdentifier(assignedId1)\n            .setIssuer(FieldWithMetaString.builder().setValue(\"party1\").build())\n            .build();\n\n        // TradeIdentifier[1]: FXD2002987 with issuer party1\n        AssignedIdentifier assignedId2 = AssignedIdentifier.builder()\n            .setIdentifier(FieldWithMetaString.builder().setValue(\"FXD2002987\").build())\n            .build();\n        \n        TradeIdentifier tradeIdentifier2 = TradeIdentifier.builder()\n            .addAssignedIdentifier(assignedId2)\n            .setIssuer(FieldWithMetaString.builder().setValue(\"party1\").build())\n            .build();\n\n        // Party[0]: party1 / CITIUS33\n        Party party1 = Party.builder()\n            .addPartyId(PartyIdentifier.builder()\n                .setIdentifier(FieldWithMetaString.builder().setValue(\"party1\").build())\n                .build())\n            .setName(FieldWithMetaString.builder().setValue(\"CITIUS33\").build())\n            .build();\n\n        // Party[1]: party2 / UBSWCHZH\n        Party party2 = Party.builder()\n            .addPartyId(PartyIdentifier.builder()\n                .setIdentifier(FieldWithMetaString.builder().setValue(\"party2\").build())\n                .build())\n            .setName(FieldWithMetaString.builder().setValue(\"UBSWCHZH\").build())\n            .build();\n\n        // Counterparty[0]: Party1\n        Counterparty counterparty1 = Counterparty.builder()\n            .setRole(CounterpartyRoleEnum.PARTY_1)\n            .setPartyReference(ReferenceWithMetaParty.builder()\n                .setGlobalReference(\"party1\")\n                .build())\n            .build();\n\n        // Counterparty[1]: Party2\n        Counterparty counterparty2 = Counterparty.builder()\n            .setRole(CounterpartyRoleEnum.PARTY_2)\n            .setPartyReference(ReferenceWithMetaParty.builder()\n                .setGlobalReference(\"party2\")\n                .build())\n            .build();\n\n        // PartyRole[0]: Buyer (party1)\n        PartyRole partyRole1 = PartyRole.builder()\n            .setRole(PartyRoleEnum.BUYER)\n            .setPartyReference(ReferenceWithMetaParty.builder()\n                .setGlobalReference(\"party1\")\n                .build())\n            .build();\n\n        // PartyRole[1]: Seller (party2)\n        PartyRole partyRole2 = PartyRole.builder()\n            .setRole(PartyRoleEnum.SELLER)\n            .setPartyReference(ReferenceWithMetaParty.builder()\n                .setGlobalReference(\"party2\")\n                .build())\n            .build();\n\n        // Underlier: Observable -> Asset -> Cash (GBP currency)\n        AssetIdentifier assetId = AssetIdentifier.builder()\n            .setIdentifier(FieldWithMetaString.builder().setValue(\"GBP\").build())\n            .setIdentifierType(AssetIdTypeEnum.CURRENCY_CODE)\n            .build();\n\n        Cash cash = Cash.builder()\n            .addIdentifier(assetId)\n            .build();\n\n        Asset asset = Asset.builder()\n            .setCash(cash)\n            .build();\n\n        Observable observable = Observable.builder()\n            .setAsset(asset)\n            .build();\n\n        Underlier underlier = Underlier.builder()\n            .setObservable(ReferenceWithMetaObservable.builder()\n                .setValue(observable)\n                .build())\n            .build();\n\n        // SettlementPayout\n        PayerReceiver payerReceiver = PayerReceiver.builder()\n            .setPayer(CounterpartyRoleEnum.PARTY_1)\n            .setReceiver(CounterpartyRoleEnum.PARTY_2)\n            .build();\n\n        // SettlementDate: 2002-04-01 - use Date\n        SettlementDate settlementDate = SettlementDate.builder()\n            .setValueDate(Date.of(2002, 4, 1))\n            .build();\n\n        SettlementTerms settlementTerms = SettlementTerms.builder()\n            .setSettlementDate(settlementDate)\n            .setSettlementType(SettlementTypeEnum.PHYSICAL)\n            .build();\n\n        SettlementPayout settlementPayout = SettlementPayout.builder()\n            .setPayerReceiver(payerReceiver)\n            .setSettlementTerms(settlementTerms)\n            .setUnderlier(underlier)\n            .build();\n\n        Payout payout = Payout.builder()\n            .setSettlementPayout(settlementPayout)\n            .build();\n\n        EconomicTerms economicTerms = EconomicTerms.builder()\n            .addPayout(payout)\n            .build();\n\n        NonTransferableProduct product = NonTransferableProduct.builder()\n            .setEconomicTerms(economicTerms)\n            .build();\n\n        // Price: 1.4643 USD/GBP, ExchangeRate type\n        UnitType priceUnit = UnitType.builder()\n            .setCurrency(FieldWithMetaString.builder().setValue(\"USD\").build())\n            .build();\n\n        UnitType pricePerUnit = UnitType.builder()\n            .setCurrency(FieldWithMetaString.builder().setValue(\"GBP\").build())\n            .build();\n\n        PriceSchedule priceSchedule = PriceSchedule.builder()\n            .setValue(BigDecimal.valueOf(1.4643))\n            .setUnit(priceUnit)\n            .setPerUnitOf(pricePerUnit)\n            .setPriceType(PriceTypeEnum.EXCHANGE_RATE)\n            .build();\n\n        // Quantity[0]: 10,000,000 GBP\n        UnitType quantity1Unit = UnitType.builder()\n            .setCurrency(FieldWithMetaString.builder().setValue(\"GBP\").build())\n            .build();\n\n        NonNegativeQuantitySchedule quantity1 = NonNegativeQuantitySchedule.builder()\n            .setValue(BigDecimal.valueOf(10000000.0))\n            .setUnit(quantity1Unit)\n            .build();\n\n        // Quantity[1]: 14,643,000 USD\n        UnitType quantity2Unit = UnitType.builder()\n            .setCurrency(FieldWithMetaString.builder().setValue(\"USD\").build())\n            .build();\n\n        NonNegativeQuantitySchedule quantity2 = NonNegativeQuantitySchedule.builder()\n            .setValue(BigDecimal.valueOf(14643000.0))\n            .setUnit(quantity2Unit)\n            .build();\n\n        PriceQuantity priceQuantity = PriceQuantity.builder()\n            .addPrice(FieldWithMetaPriceSchedule.builder().setValue(priceSchedule).build())\n            .addQuantity(FieldWithMetaNonNegativeQuantitySchedule.builder().setValue(quantity1).build())\n            .addQuantity(FieldWithMetaNonNegativeQuantitySchedule.builder().setValue(quantity2).build())\n            .build();\n\n        TradeLot tradeLot = TradeLot.builder()\n            .addPriceQuantity(priceQuantity)\n            .build();\n\n        // Build the Trade\n        Trade trade = Trade.builder()\n            .setTradeDate(tradeDate)\n            .addTradeIdentifier(tradeIdentifier1)\n            .addTradeIdentifier(tradeIdentifier2)\n            .addParty(party1)\n            .addParty(party2)\n            .addCounterparty(counterparty1)\n            .addCounterparty(counterparty2)\n            .addPartyRole(partyRole1)\n            .addPartyRole(partyRole2)\n            .setProduct(product)\n            .addTradeLot(tradeLot)\n            .build();\n\n        return trade;\n    }\n\n    public static void main(String[] args) throws Exception {\n        Trade trade = buildTrade();\n\n        com.fasterxml.jackson.databind.ObjectMapper mapper =\n            com.regnosys.rosetta.common.serialisation.RosettaObjectMapper\n                .getNewRosettaObjectMapper();\n\n        String tradeJson = mapper.writerWithDefaultPrettyPrinter()\n            .writeValueAsString(trade);\n\n        // Wrap in {\"trade\": ...} to match input format\n        System.out.println(\"{\\\"trade\\\":\" + tradeJson + \"}\");\n    }\n}\n"
+        "code": "import com.rosetta.model.metafields.FieldWithMetaDate;\nimport com.rosetta.model.metafields.FieldWithMetaString;\nimport com.rosetta.model.lib.records.Date;\nimport cdm.event.common.Trade;\nimport cdm.event.common.TradeIdentifier;\nimport cdm.base.staticdata.identifier.AssignedIdentifier;\nimport cdm.base.staticdata.party.Party;\nimport cdm.base.staticdata.party.PartyIdentifier;\nimport cdm.base.staticdata.party.Counterparty;\nimport cdm.base.staticdata.party.PartyRole;\nimport cdm.base.staticdata.party.metafields.ReferenceWithMetaParty;\nimport cdm.base.staticdata.party.CounterpartyRoleEnum;\nimport cdm.base.staticdata.party.PartyRoleEnum;\nimport cdm.base.staticdata.party.PayerReceiver;\nimport cdm.product.template.NonTransferableProduct;\nimport cdm.product.template.EconomicTerms;\nimport cdm.product.template.Payout;\nimport cdm.product.template.SettlementPayout;\nimport cdm.product.template.SettlementTerms;\nimport cdm.product.template.SettlementDate;\nimport cdm.product.template.Underlier;\nimport cdm.product.common.settlement.SettlementTypeEnum;\nimport cdm.product.template.TradeLot;\nimport cdm.observable.asset.PriceQuantity;\nimport cdm.observable.asset.metafields.FieldWithMetaPriceSchedule;\nimport cdm.observable.asset.PriceSchedule;\nimport cdm.observable.asset.PriceTypeEnum;\nimport cdm.base.math.UnitType;\nimport cdm.base.math.metafields.FieldWithMetaNonNegativeQuantitySchedule;\nimport cdm.base.math.NonNegativeQuantitySchedule;\nimport cdm.base.staticdata.asset.common.Asset;\nimport cdm.base.staticdata.asset.common.Cash;\nimport cdm.base.staticdata.asset.common.AssetIdentifier;\nimport cdm.base.staticdata.asset.common.AssetIdTypeEnum;\nimport com.rosetta.model.lib.meta.ReferenceWithMetaString;\nimport com.fasterxml.jackson.databind.ObjectMapper;\nimport com.regnosys.rosetta.common.serialisation.RosettaObjectMapper;\nimport java.math.BigDecimal;\n\npublic class CdmTradeBuilder {\n\n    public static cdm.event.common.Trade buildTrade() {\n        return Trade.builder()\n            .setTradeDate(FieldWithMetaDate.builder()\n                .setValue(Date.of(2001, 11, 12))\n                .build())\n            .addTradeIdentifier(\n                TradeIdentifier.builder()\n                    .addAssignedIdentifier(\n                        AssignedIdentifier.builder()\n                            .setIdentifier(FieldWithMetaString.builder()\n                                .setValue(\"FWD123\")\n                                .build())\n                            .build())\n                    .setIssuer(FieldWithMetaString.builder()\n                        .setValue(\"party1\")\n                        .build())\n                    .build())\n            .addTradeIdentifier(\n                TradeIdentifier.builder()\n                    .addAssignedIdentifier(\n                        AssignedIdentifier.builder()\n                            .setIdentifier(FieldWithMetaString.builder()\n                                .setValue(\"FXD2002987\")\n                                .build())\n                            .build())\n                    .setIssuer(FieldWithMetaString.builder()\n                        .setValue(\"party1\")\n                        .build())\n                    .build())\n            .addParty(\n                Party.builder()\n                    .addPartyId(\n                        PartyIdentifier.builder()\n                            .setIdentifier(FieldWithMetaString.builder()\n                                .setValue(\"party1\")\n                                .build())\n                            .build())\n                    .setName(FieldWithMetaString.builder()\n                        .setValue(\"CITIUS33\")\n                        .build())\n                    .build())\n            .addParty(\n                Party.builder()\n                    .addPartyId(\n                        PartyIdentifier.builder()\n                            .setIdentifier(FieldWithMetaString.builder()\n                                .setValue(\"party2\")\n                                .build())\n                            .build())\n                    .setName(FieldWithMetaString.builder()\n                        .setValue(\"UBSWCHZH\")\n                        .build())\n                    .build())\n            .addCounterparty(\n                Counterparty.builder()\n                    .setRole(CounterpartyRoleEnum.PARTY_1)\n                    .setPartyReference(ReferenceWithMetaParty.builder()\n                        .setGlobalReference(\"party1\")\n                        .build())\n                    .build())\n            .addCounterparty(\n                Counterparty.builder()\n                    .setRole(CounterpartyRoleEnum.PARTY_2)\n                    .setPartyReference(ReferenceWithMetaParty.builder()\n                        .setGlobalReference(\"party2\")\n                        .build())\n                    .build())\n            .addPartyRole(\n                PartyRole.builder()\n                    .setRole(PartyRoleEnum.BUYER)\n                    .setPartyReference(ReferenceWithMetaParty.builder()\n                        .setGlobalReference(\"party1\")\n                        .build())\n                    .build())\n            .addPartyRole(\n                PartyRole.builder()\n                    .setRole(PartyRoleEnum.SELLER)\n                    .setPartyReference(ReferenceWithMetaParty.builder()\n                        .setGlobalReference(\"party2\")\n                        .build())\n                    .build())\n            .setProduct(\n                NonTransferableProduct.builder()\n                    .setEconomicTerms(\n                        EconomicTerms.builder()\n                            .addPayout(\n                                Payout.builder()\n                                    .setSettlementPayout(\n                                        SettlementPayout.builder()\n                                            .setPayerReceiver(\n                                                PayerReceiver.builder()\n                                                    .setPayer(CounterpartyRoleEnum.PARTY_1)\n                                                    .setReceiver(CounterpartyRoleEnum.PARTY_2)\n                                                    .build())\n                                            .setSettlementTerms(\n                                                SettlementTerms.builder()\n                                                    .setSettlementDate(\n                                                        SettlementDate.builder()\n                                                            .setValueDate(Date.of(2002, 4, 1))\n                                                            .build())\n                                                    .setSettlementType(SettlementTypeEnum.PHYSICAL)\n                                                    .build())\n                                            .setUnderlier(\n                                                Underlier.builder()\n                                                    .setObservable(\n                                                        cdm.observable.asset.metafields.ReferenceWithMetaObservable.builder()\n                                                            .setValue(\n                                                                cdm.observable.asset.Observable.builder()\n                                                                    .setAsset(\n                                                                        Asset.builder()\n                                                                            .setCash(\n                                                                                Cash.builder()\n                                                                                    .addIdentifier(\n                                                                                        AssetIdentifier.builder()\n                                                                                            .setIdentifier(\n                                                                                                FieldWithMetaString.builder()\n                                                                                                    .setValue(\"GBP\")\n                                                                                                    .build())\n                                                                                            .setIdentifierType(AssetIdTypeEnum.CURRENCY_CODE)\n                                                                                            .build())\n                                                                                    .build())\n                                                                            .build())\n                                                                    .build())\n                                                            .build())\n                                                    .build())\n                                            .build())\n                                    .build())\n                            .build())\n                    .build())\n            .addTradeLot(\n                TradeLot.builder()\n                    .addPriceQuantity(\n                        PriceQuantity.builder()\n                            .addPrice(\n                                FieldWithMetaPriceSchedule.builder()\n                                    .setValue(\n                                        PriceSchedule.builder()\n                                            .setValue(new BigDecimal(\"1.4643\"))\n                                            .setUnit(\n                                                UnitType.builder()\n                                                    .setCurrency(FieldWithMetaString.builder()\n                                                        .setValue(\"USD\")\n                                                        .build())\n                                                    .build())\n                                            .setPerUnitOf(\n                                                UnitType.builder()\n                                                    .setCurrency(FieldWithMetaString.builder()\n                                                        .setValue(\"GBP\")\n                                                        .build())\n                                                    .build())\n                                            .setPriceType(PriceTypeEnum.EXCHANGE_RATE)\n                                            .build())\n                                    .build())\n                            .addQuantity(\n                                FieldWithMetaNonNegativeQuantitySchedule.builder()\n                                    .setValue(\n                                        NonNegativeQuantitySchedule.builder()\n                                            .setValue(new BigDecimal(\"10000000.0\"))\n                                            .setUnit(\n                                                UnitType.builder()\n                                                    .setCurrency(FieldWithMetaString.builder()\n                                                        .setValue(\"GBP\")\n                                                        .build())\n                                                    .build())\n                                            .build())\n                                    .build())\n                            .addQuantity(\n                                FieldWithMetaNonNegativeQuantitySchedule.builder()\n                                    .setValue(\n                                        NonNegativeQuantitySchedule.builder()\n                                            .setValue(new BigDecimal(\"14643000.0\"))\n                                            .setUnit(\n                                                UnitType.builder()\n                                                    .setCurrency(FieldWithMetaString.builder()\n                                                        .setValue(\"USD\")\n                                                        .build())\n                                                    .build())\n                                            .build())\n                                    .build())\n                            .build())\n                    .build())\n            .build();\n    }\n\n    public static void main(String[] args) throws Exception {\n        cdm.event.common.Trade trade = buildTrade();\n\n        ObjectMapper mapper = RosettaObjectMapper.getNewRosettaObjectMapper();\n\n        String tradeJson = mapper.writerWithDefaultPrettyPrinter()\n            .writeValueAsString(trade);\n\n        // Wrap in {\"trade\": ...} to match input format\n        System.out.println(\"{\\\"trade\\\":\" + tradeJson + \"}\");\n    }\n}\n"
       }
     },
     {
       "iteration": 7,
       "type": "tool_result",
       "tool": "write_java_file",
-      "result_preview": "{\"success\": true, \"path\": \"C:\\\\Users\\\\User\\\\Desktop\\\\fpml_isdacm\\\\generated\\\\CdmTradeBuilder.java\", \"lines\": 258}"
+      "result_preview": "{\"success\": true, \"path\": \"C:\\\\Users\\\\User\\\\Desktop\\\\fpml_isdacm\\\\generated\\\\CdmTradeBuilder.java\", \"lines\": 238}"
     },
     {
       "iteration": 8,
@@ -190,10 +246,45 @@
       "iteration": 8,
       "type": "tool_result",
       "tool": "compile_java",
+      "result_preview": "{\"success\": false, \"errors\": [{\"line\": 19, \"message\": \"cannot find symbol\\nimport cdm.product.template.SettlementTerms;\\n  symbol:   class SettlementTerms\\n  location: package cdm.product.template\", \"source_line\": \"import cdm.product.template.SettlementTerms;\", \"hint\": \"'SettlementTerms' is not imported. Add the import statement or use fully-qualified name (e.g. package.SettlementTerms).\", \"missing_symbol\": \"SettlementTerms\"}, {\"line\": 20, \"message\": \"cannot find symbol\\nimport cdm.product.templ"
+    },
+    {
+      "iteration": 9,
+      "type": "tool_call",
+      "tool": "patch_java_file",
+      "args": {
+        "patches": [
+          {
+            "old_text": "import cdm.product.template.SettlementTerms;\nimport cdm.product.template.SettlementDate;\nimport cdm.product.template.Underlier;",
+            "new_text": "import cdm.product.common.settlement.SettlementTerms;\nimport cdm.product.common.settlement.SettlementDate;\nimport cdm.product.template.Underlier;"
+          },
+          {
+            "old_text": "import com.rosetta.model.lib.meta.ReferenceWithMetaString;",
+            "new_text": ""
+          }
+        ]
+      }
+    },
+    {
+      "iteration": 9,
+      "type": "tool_result",
+      "tool": "patch_java_file",
+      "result_preview": "{\"success\": true, \"replacements_made\": 2, \"path\": \"C:\\\\Users\\\\User\\\\Desktop\\\\fpml_isdacm\\\\generated\\\\CdmTradeBuilder.java\"}"
+    },
+    {
+      "iteration": 10,
+      "type": "tool_call",
+      "tool": "compile_java",
+      "args": {}
+    },
+    {
+      "iteration": 10,
+      "type": "tool_result",
+      "tool": "compile_java",
       "result_preview": "{\"success\": true, \"class_file\": \"C:\\\\Users\\\\User\\\\Desktop\\\\fpml_isdacm\\\\generated\\\\CdmTradeBuilder.class\", \"warnings\": []}"
     },
     {
-      "iteration": 8,
+      "iteration": 10,
       "type": "tool_call",
       "tool": "run_java",
       "args": {
@@ -202,45 +293,45 @@
       }
     },
     {
-      "iteration": 8,
+      "iteration": 10,
       "type": "tool_result",
       "tool": "run_java",
       "result_preview": "{\"success\": true, \"exit_code\": 0, \"stdout\": \"{\\\"trade\\\":{\\n  \\\"product\\\" : {\\n    \\\"economicTerms\\\" : {\\n      \\\"payout\\\" : [ {\\n        \\\"SettlementPayout\\\" : {\\n          \\\"payerReceiver\\\" : {\\n            \\\"payer\\\" : \\\"Party1\\\",\\n            \\\"receiver\\\" : \\\"Party2\\\"\\n          },\\n          \\\"settlementTerms\\\" : {\\n            \\\"settlementType\\\" : \\\"Physical\\\",\\n            \\\"settlementDate\\\" : {\\n              \\\"valueDate\\\" : \\\"2002-04-01\\\"\\n            }\\n          },\\n          \\\"underlie"
     },
     {
-      "iteration": 8,
+      "iteration": 10,
       "type": "tool_call",
       "tool": "diff_json",
       "args": {
         "expected_json_path": "tmp/transformer-fx-ex4.json",
-        "actual_json": "<len 2749 chars>"
+        "actual_json": "<len 2753 chars>"
       }
     },
     {
-      "iteration": 8,
+      "iteration": 10,
       "type": "tool_result",
       "tool": "diff_json",
       "result_preview": "{\"match\": true, \"match_percentage\": 100.0, \"total_leaf_values\": 31, \"matched_leaf_values\": 31, \"differences\": [], \"extra_in_actual\": []}"
     },
     {
-      "iteration": 9,
+      "iteration": 11,
       "type": "tool_call",
       "tool": "finish",
       "args": {
-        "java_file": "CdmTradeBuilder.java",
+        "java_file": "C:\\Users\\User\\Desktop\\fpml_isdacm\\generated\\CdmTradeBuilder.java",
         "match_percentage": 100,
         "status": "success",
-        "summary": "Successfully generated Java code that builds the CDM FX Forward trade from tmp/transformer-fx-ex4.json. The code compiles and produces JSON output that matches the input file exactly (100% match). The trade represents a GBP/USD FX forward with 10M GBP notional at 1.4643 exchange rate, settling on 2002-04-01."
+        "summary": "Successfully generated Java code that builds the FX Forward trade from tmp/transformer-fx-ex4.json. The code compiles against the CDM classpath and produces JSON output that matches the input file 100%."
       }
     }
   ],
   "result": {
     "success": true,
-    "java_file": "CdmTradeBuilder.java",
+    "java_file": "C:\\Users\\User\\Desktop\\fpml_isdacm\\generated\\CdmTradeBuilder.java",
     "match_percentage": 100.0,
-    "iterations": 10,
-    "total_tool_calls": 17,
-    "duration_seconds": 211.61,
-    "summary": "Successfully generated Java code that builds the CDM FX Forward trade from tmp/transformer-fx-ex4.json. The code compiles and produces JSON output that matches the input file exactly (100% match). The trade represents a GBP/USD FX forward with 10M GBP notional at 1.4643 exchange rate, settling on 2002-04-01."
+    "iterations": 12,
+    "total_tool_calls": 23,
+    "duration_seconds": 157.22,
+    "summary": "Successfully generated Java code that builds the FX Forward trade from tmp/transformer-fx-ex4.json. The code compiles against the CDM classpath and produces JSON output that matches the input file 100%."
   }
 }

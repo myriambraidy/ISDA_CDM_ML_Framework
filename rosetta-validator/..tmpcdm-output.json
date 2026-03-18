@@ -1,0 +1,188 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] ---------------------< com.fpml:rosetta-validator >---------------------
+[INFO] Building Rosetta CDM Validator CLI 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.xbase.lib/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.xbase.lib/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.xbase.lib/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata com.google.code.gson:gson/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata com.google.code.gson:gson/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata com.google.code.gson:gson/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.util/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.util/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.util/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.xbase/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.xbase/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.xbase/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.common.types/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.common.types/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext.common.types/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.emf:org.eclipse.emf.ecore.xcore.lib/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.emf:org.eclipse.emf.ecore.xcore.lib/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.emf:org.eclipse.emf.ecore.xcore.lib/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.emf:org.eclipse.emf.codegen.ecore.xtext/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.emf:org.eclipse.emf.codegen.ecore.xtext/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] Could not transfer metadata org.eclipse.emf:org.eclipse.emf.codegen.ecore.xtext/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml failed to transfer from artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven during a previous attempt. This failure was cached in the local repository and resolution will not be reattempted until the update interval of artifact-registry has elapsed or updates are forced. Original error: Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml from/to artifact-registry (artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/public-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml failed to transfer from artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven during a previous attempt. This failure was cached in the local repository and resolution will not be reattempted until the update interval of artifact-registry-regnosys has elapsed or updates are forced. Original error: Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml from/to artifact-registry-regnosys (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven with type default using the available connector factories: BasicRepositoryConnectorFactory
+[WARNING] org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml failed to transfer from artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot during a previous attempt. This failure was cached in the local repository and resolution will not be reattempted until the update interval of artifact-registry-regnosys-snapshots has elapsed or updates are forced. Original error: Could not transfer metadata org.eclipse.xtext:org.eclipse.xtext/maven-metadata.xml from/to artifact-registry-regnosys-snapshots (artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot): Cannot access artifactregistry://europe-west1-maven.pkg.dev/production-208613/regnosys-maven-snapshot with type default using the available connector factories: BasicRepositoryConnectorFactory
+[INFO] 
+[INFO] --- build-helper:3.4.0:add-source (default) @ rosetta-validator ---
+[INFO] Source directory: C:\Users\User\Desktop\fpml_isdacm\rosetta-validator\generated added.
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ rosetta-validator ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ rosetta-validator ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- exec:3.1.0:java (default-cli) @ rosetta-validator ---
+{"trade":{
+  "product" : {
+    "economicTerms" : {
+      "payout" : [ {
+        "SettlementPayout" : {
+          "payerReceiver" : {
+            "payer" : "Party1",
+            "receiver" : "Party2"
+          },
+          "settlementTerms" : {
+            "settlementType" : "Physical",
+            "settlementDate" : {
+              "valueDate" : "2002-04-01"
+            }
+          },
+          "underlier" : {
+            "Observable" : {
+              "value" : {
+                "Asset" : {
+                  "Cash" : {
+                    "identifier" : [ {
+                      "identifier" : {
+                        "value" : "GBP"
+                      },
+                      "identifierType" : "CurrencyCode"
+                    } ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      } ]
+    }
+  },
+  "tradeLot" : [ {
+    "priceQuantity" : [ {
+      "price" : [ {
+        "value" : {
+          "value" : 1.4643,
+          "unit" : {
+            "currency" : {
+              "value" : "USD"
+            }
+          },
+          "perUnitOf" : {
+            "currency" : {
+              "value" : "GBP"
+            }
+          },
+          "priceType" : "ExchangeRate"
+        }
+      } ],
+      "quantity" : [ {
+        "value" : {
+          "value" : 10000000.0,
+          "unit" : {
+            "currency" : {
+              "value" : "GBP"
+            }
+          }
+        }
+      }, {
+        "value" : {
+          "value" : 14643000.0,
+          "unit" : {
+            "currency" : {
+              "value" : "USD"
+            }
+          }
+        }
+      } ]
+    } ]
+  } ],
+  "counterparty" : [ {
+    "role" : "Party1",
+    "partyReference" : {
+      "globalReference" : "party1"
+    }
+  }, {
+    "role" : "Party2",
+    "partyReference" : {
+      "globalReference" : "party2"
+    }
+  } ],
+  "tradeIdentifier" : [ {
+    "issuer" : {
+      "value" : "party1"
+    },
+    "assignedIdentifier" : [ {
+      "identifier" : {
+        "value" : "FWD123"
+      }
+    } ]
+  }, {
+    "issuer" : {
+      "value" : "party1"
+    },
+    "assignedIdentifier" : [ {
+      "identifier" : {
+        "value" : "FXD2002987"
+      }
+    } ]
+  } ],
+  "tradeDate" : {
+    "value" : "2001-11-12"
+  },
+  "party" : [ {
+    "partyId" : [ {
+      "identifier" : {
+        "value" : "party1"
+      }
+    } ],
+    "name" : {
+      "value" : "CITIUS33"
+    }
+  }, {
+    "partyId" : [ {
+      "identifier" : {
+        "value" : "party2"
+      }
+    } ],
+    "name" : {
+      "value" : "UBSWCHZH"
+    }
+  } ],
+  "partyRole" : [ {
+    "partyReference" : {
+      "globalReference" : "party1"
+    },
+    "role" : "Buyer"
+  }, {
+    "partyReference" : {
+      "globalReference" : "party2"
+    },
+    "role" : "Seller"
+  } ]
+}}
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  3.394 s
+[INFO] Finished at: 2026-03-18T11:52:21+02:00
+[INFO] ------------------------------------------------------------------------

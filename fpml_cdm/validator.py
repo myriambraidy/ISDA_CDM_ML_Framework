@@ -264,6 +264,38 @@ def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> Validati
     )
 
 
+def validate_normalized_and_cdm(normalized: NormalizedFxForward, cdm_obj: Dict[str, Any]) -> ValidationReport:
+    """
+    Validate a *patched* normalized model directly (no re-parse from FpML).
+
+    This is required by the mapping agent: it proposes structured ruleset patches,
+    deterministically extracts a patched normalized model, transforms it, and we
+    need validation against that patched model.
+    """
+    errors: List[ValidationIssue] = []
+    warnings: List[ValidationIssue] = []
+
+    normalized_schema_errors = validate_schema_data(
+        "fpml_fx_forward_parsed.schema.json",
+        normalized.to_dict(),
+    )
+    errors.extend(normalized_schema_errors)
+
+    trade_dict = cdm_obj.get("trade", {})
+    cdm_schema_errors = validate_cdm_official_schema(trade_dict)
+    errors.extend(cdm_schema_errors)
+
+    semantic_errors, mapping_score = _semantic_validation(normalized, cdm_obj)
+    errors.extend(semantic_errors)
+
+    return ValidationReport(
+        valid=len(errors) == 0,
+        mapping_score=mapping_score,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
 def validate_conversion_files(fpml_path: str, cdm_json_path: str) -> ValidationReport:
     with open(cdm_json_path, "r", encoding="utf-8") as f:
         cdm_obj = json.load(f)
