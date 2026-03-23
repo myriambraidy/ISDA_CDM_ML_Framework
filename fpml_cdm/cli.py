@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .llm.base import get_llm_provider
+from .mapping_agent.agent import MappingAgentConfig
 from .parser import parse_fpml_fx
 from .pipeline import convert_fpml_to_cdm
 from .transformer import transform_to_cdm_v6
@@ -213,9 +215,55 @@ def _resolve_llm_provider(args: argparse.Namespace):
     )
 
 
+def _resolve_mapping_llm_client(args: argparse.Namespace):
+    provider_name = getattr(args, "mapping_provider", "none") or "none"
+    if provider_name == "none":
+        return None
+    if provider_name == "openai":
+        try:
+            import openai
+        except ImportError:
+            raise RuntimeError("openai package not installed. Run: pip install openai")
+        return openai.OpenAI(
+            api_key=getattr(args, "mapping_api_key", None) or os.environ.get("OPENAI_API_KEY"),
+            base_url=getattr(args, "mapping_base_url", None) or None,
+        )
+    if provider_name == "openrouter":
+        from .java_gen.openrouter_client import OpenRouterClient
+
+        api_key = (getattr(args, "mapping_api_key", None) or os.environ.get("OPENROUTER_API_KEY", "")).strip()
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY missing for mapping-provider=openrouter")
+        return OpenRouterClient(api_key=api_key)
+    raise RuntimeError(f"Unknown mapping provider: {provider_name}")
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
+    from dotenv import load_dotenv
+
+    load_dotenv()
     llm_provider = _resolve_llm_provider(args)
-    result = convert_fpml_to_cdm(args.input, strict=not args.no_strict, llm_provider=llm_provider)
+    try:
+        mapping_llm_client = _resolve_mapping_llm_client(args)
+    except RuntimeError as exc:
+        _write_json({"ok": False, "error": str(exc)}, args.output)
+        return 2
+    mapping_cfg = MappingAgentConfig(
+        max_iterations=args.mapping_max_iterations,
+        max_tool_calls=args.mapping_max_tool_calls,
+        timeout_seconds=args.mapping_timeout,
+        semantic_no_improve_limit=args.mapping_no_improve,
+        enable_rosetta=True,
+        rosetta_timeout_seconds=args.mapping_rosetta_timeout,
+    )
+    result = convert_fpml_to_cdm(
+        args.input,
+        strict=not args.no_strict,
+        llm_provider=llm_provider,
+        mapping_llm_client=mapping_llm_client,
+        mapping_model=args.mapping_model,
+        mapping_config=mapping_cfg,
+    )
 
     payload = result.to_dict()
     _write_json(payload, args.output)
@@ -226,7 +274,11 @@ def cmd_convert(args: argparse.Namespace) -> int:
         _write_json(result.cdm, args.cdm_output)
     if args.report_output and result.validation is not None:
         _write_json(result.validation.to_dict(), args.report_output)
+    if args.review_ticket_output and result.review_ticket is not None:
+        _write_json(result.review_ticket, args.review_ticket_output)
 
+    if not result.ok and args.strict_ci:
+        return 1
     return 0 if result.ok else 1
 
 
@@ -448,6 +500,17 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--llm-provider", default="none", help="LLM provider for field recovery: none, gemini, openai_compat (default: none)")
     convert_parser.add_argument("--llm-base-url", default="http://localhost:11434/v1", help="Base URL for openai_compat provider (default: http://localhost:11434/v1)")
     convert_parser.add_argument("--llm-model", default="llama3.2", help="Model name for LLM provider (default: llama3.2)")
+    convert_parser.add_argument("--mapping-provider", choices=("none", "openrouter", "openai"), default="none", help="Provider for mapping-agent refinement (default: none)")
+    convert_parser.add_argument("--mapping-api-key", default=None, help="API key for mapping provider (optional; env vars supported)")
+    convert_parser.add_argument("--mapping-base-url", default=None, help="Base URL for mapping-provider=openai")
+    convert_parser.add_argument("--mapping-model", default="minimax/minimax-m2.5", help="Model for mapping-agent refinement")
+    convert_parser.add_argument("--mapping-max-iterations", type=int, default=10, help="Mapping-agent max iterations")
+    convert_parser.add_argument("--mapping-max-tool-calls", type=int, default=80, help="Mapping-agent max total tool calls")
+    convert_parser.add_argument("--mapping-timeout", type=int, default=300, help="Mapping-agent timeout in seconds")
+    convert_parser.add_argument("--mapping-no-improve", type=int, default=3, help="Mapping-agent semantic no-improvement threshold")
+    convert_parser.add_argument("--mapping-rosetta-timeout", type=int, default=60, help="Rosetta timeout in seconds during mapping compliance checks")
+    convert_parser.add_argument("--review-ticket-output", help="Optional review-ticket JSON output path when non-compliant")
+    convert_parser.add_argument("--strict-ci", action="store_true", help="Return non-zero exit code for non-compliant outputs")
     convert_parser.set_defaults(func=cmd_convert)
 
     java_gen_parser = subparsers.add_parser(

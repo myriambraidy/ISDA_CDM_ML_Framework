@@ -10,6 +10,7 @@ from fpml_cdm import convert_fpml_to_cdm
 from fpml_cdm.fpml_to_cdm_java import generate_java_from_fpml
 from fpml_cdm.java_gen.agent import AgentResult
 from fpml_cdm.mapping_agent.agent import MappingAgentConfig, MappingAgentResult
+from fpml_cdm.rosetta_validator import RosettaValidationResult
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,10 +35,27 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
                     for p in out_dir.glob("*.json"):
                         p.unlink(missing_ok=True)
 
-                expected_cdm = convert_fpml_to_cdm(str(fpml_path), strict=True).cdm
+                with patch(
+                    "fpml_cdm.pipeline.validate_cdm_rosetta_with_retry",
+                    return_value=RosettaValidationResult(valid=True, failures=[]),
+                ):
+                    expected_cdm = convert_fpml_to_cdm(str(fpml_path), strict=True).cdm
                 assert expected_cdm is not None
 
-                with patch("fpml_cdm.fpml_to_cdm_java.run_mapping_agent") as mock_mapping, patch(
+                mapping_result = MappingAgentResult(
+                    best_cdm_json=expected_cdm,
+                    best_normalized={},
+                    best_validation_report={"valid": True, "errors": [], "warnings": [], "mapping_score": {"total_fields": 0, "matched_fields": 0, "accuracy_percent": 100.0}},
+                    best_schema_error_count=0,
+                    best_semantic_error_count=0,
+                    best_rosetta_failure_count=0,
+                    adapter_id="fxForward",
+                    iterations=1,
+                    total_tool_calls=1,
+                    duration_seconds=0.01,
+                    trace=[],
+                )
+                with patch("fpml_cdm.fpml_to_cdm_java.run_mapping_agent", return_value=mapping_result) as mock_mapping, patch(
                     "fpml_cdm.java_gen.agent.run_agent"
                 ) as mock_java:
 
@@ -59,7 +77,6 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
                         )
 
                     mock_java.side_effect = _mock_java_run
-                    mock_mapping.side_effect = AssertionError("mapping agent should not be called")
 
                     java_result, mapping_result, cdm_json_path = generate_java_from_fpml(
                         str(fpml_path),
@@ -74,8 +91,9 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
                     )
 
                     self.assertTrue(java_result.success)
-                    self.assertIsNone(mapping_result)
+                    self.assertIsNotNone(mapping_result)
                     self.assertEqual(Path(cdm_json_path), cdm_json_path_expected)
+                    mock_mapping.assert_called_once()
 
     def test_generate_java_from_fpml_runs_mapping_when_deterministic_invalid(self) -> None:
         fpml_path = FIXTURES / "missing_value_date.xml"

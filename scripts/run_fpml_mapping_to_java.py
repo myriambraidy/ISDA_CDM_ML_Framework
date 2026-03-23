@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from dotenv import load_dotenv
 
 from fpml_cdm.mapping_agent.agent import MappingAgentConfig, run_mapping_agent
+from fpml_cdm.parser_enrichment import ParserEnrichmentConfig, run_parser_enrichment
 from fpml_cdm.java_gen.agent import AgentConfig, run_agent
 
 
@@ -105,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mapping-max-tool-calls", type=int, default=80)
     parser.add_argument("--mapping-timeout", type=int, default=300)
     parser.add_argument("--mapping-no-improve", type=int, default=3)
+    parser.add_argument("--enrich-parser", action="store_true", help="Run LLM parser enrichment before mapping.")
+    parser.add_argument("--enrich-parser-model", default=None, help="Optional parser-enrichment model override.")
+    parser.add_argument("--enrich-parser-max-attempts", type=int, default=1, help="Parser enrichment attempts.")
 
     parser.add_argument("--java-max-iterations", type=int, default=20)
     parser.add_argument("--java-max-tool-calls", type=int, default=50)
@@ -155,24 +159,126 @@ def main(argv: list[str] | None = None) -> int:
 
     expected_cdm_json_path = out_dir / "generated_expected_cdm.json"
     mapping_trace_json_path = out_dir / "mapping_trace.json"
+    parser_enrichment_trace_json_path = out_dir / "parser_enrichment_trace.json"
+    parser_enriched_normalized_json_path = out_dir / "parser_enriched_normalized.json"
 
     log_progress = not args.quiet
-    print(f"\n[1/3] Mapping agent start: input={args.input}", flush=True)
-    with _force_disable_rosetta_if_requested(rosetta_enabled=bool(args.rosetta)):
-        map_result = run_mapping_agent(
+    enrich_model = args.enrich_parser_model or args.model
+
+    parser_enrichment_result = None
+    if bool(args.enrich_parser):
+        print(f"\n[0/3] Parser enrichment start: input={args.input}", flush=True)
+        parser_enrichment_result = run_parser_enrichment(
             fpml_path=args.input,
             llm_client=llm_client,
-            model=mapping_model,
-            config=mapping_cfg,
+            model=enrich_model,
+            config=ParserEnrichmentConfig(
+                max_attempts=int(args.enrich_parser_max_attempts),
+                enable_rosetta=bool(args.rosetta),
+                rosetta_timeout_seconds=int(os.environ.get("FPML_CDM_ROSETTA_TIMEOUT", "120")),
+            ),
             log_progress=log_progress and bool(args.verbose or not args.quiet),
         )
-    print(
-        f"[1/3] Mapping agent done: adapter={map_result.adapter_id} "
-        f"schema_errors={map_result.best_schema_error_count} "
-        f"semantic_errors={map_result.best_semantic_error_count} "
-        f"iterations={map_result.iterations} tool_calls={map_result.total_tool_calls}",
-        flush=True,
-    )
+        _write_json(parser_enrichment_trace_json_path, parser_enrichment_result.to_dict())
+        _write_json(parser_enriched_normalized_json_path, parser_enrichment_result.enriched_normalized)
+        print(
+            f"[0/3] Parser enrichment done: accepted={parser_enrichment_result.accepted} "
+            f"baseline_score={list(parser_enrichment_result.baseline_score)} "
+            f"enriched_score={list(parser_enrichment_result.enriched_score)}",
+            flush=True,
+        )
+
+    if int(args.mapping_max_iterations) <= 0:
+        from types import SimpleNamespace
+        from fpml_cdm.validator import validate_normalized_and_cdm
+        from fpml_cdm.types import NormalizedFxForward
+
+        if parser_enrichment_result is not None:
+            chosen_cdm = parser_enrichment_result.enriched_cdm
+            chosen_normalized = NormalizedFxForward.from_dict(parser_enrichment_result.enriched_normalized)
+            chosen_adapter = str(chosen_normalized.sourceProduct or "fxForward")
+        else:
+            from fpml_cdm.rulesets import get_base_ruleset
+            from fpml_cdm.ruleset_engine import parse_fpml_fx_with_ruleset
+            from fpml_cdm.transformer import transform_to_cdm_v6
+
+            best_adapter = "fxForward"
+            best_score = (10**9, 10**9)
+            chosen_cdm = {}
+            chosen_normalized = None
+            for adapter_id in ("fxSingleLeg", "fxForward"):
+                try:
+                    normalized, _ = parse_fpml_fx_with_ruleset(
+                        fpml_path=args.input,
+                        adapter_id=adapter_id,
+                        ruleset=get_base_ruleset(adapter_id),
+                        strict=False,
+                        recovery_mode=True,
+                    )
+                    cdm = transform_to_cdm_v6(normalized)
+                    rep = validate_normalized_and_cdm(normalized, cdm)
+                    score = (
+                        sum(1 for e in rep.errors if e.code == "SCHEMA_VALIDATION_FAILED"),
+                        sum(1 for e in rep.errors if e.code == "SEMANTIC_VALIDATION_FAILED"),
+                    )
+                    if score < best_score:
+                        best_score = score
+                        best_adapter = adapter_id
+                        chosen_cdm = cdm
+                        chosen_normalized = normalized
+                except Exception:
+                    continue
+            chosen_adapter = best_adapter
+            if chosen_normalized is None:
+                raise RuntimeError("Failed to produce deterministic mapping candidate.")
+
+        chosen_report = validate_normalized_and_cdm(chosen_normalized, chosen_cdm)
+        map_result = SimpleNamespace(
+            adapter_id=chosen_adapter,
+            best_schema_error_count=sum(1 for e in chosen_report.errors if e.code == "SCHEMA_VALIDATION_FAILED"),
+            best_semantic_error_count=sum(1 for e in chosen_report.errors if e.code == "SEMANTIC_VALIDATION_FAILED"),
+            best_rosetta_failure_count=0,
+            iterations=0,
+            total_tool_calls=0,
+            trace=[],
+            best_cdm_json=chosen_cdm,
+            to_dict=lambda: {
+                "adapter_id": chosen_adapter,
+                "best_schema_error_count": sum(
+                    1 for e in chosen_report.errors if e.code == "SCHEMA_VALIDATION_FAILED"
+                ),
+                "best_semantic_error_count": sum(
+                    1 for e in chosen_report.errors if e.code == "SEMANTIC_VALIDATION_FAILED"
+                ),
+                "iterations": 0,
+                "total_tool_calls": 0,
+                "duration_seconds": 0.0,
+                "best_validation_report": chosen_report.to_dict(),
+            },
+        )
+        print(
+            f"\n[1/3] Mapping agent skipped (max iterations=0): adapter={map_result.adapter_id} "
+            f"schema_errors={map_result.best_schema_error_count} "
+            f"semantic_errors={map_result.best_semantic_error_count}",
+            flush=True,
+        )
+    else:
+        print(f"\n[1/3] Mapping agent start: input={args.input}", flush=True)
+        with _force_disable_rosetta_if_requested(rosetta_enabled=bool(args.rosetta)):
+            map_result = run_mapping_agent(
+                fpml_path=args.input,
+                llm_client=llm_client,
+                model=mapping_model,
+                config=mapping_cfg,
+                log_progress=log_progress and bool(args.verbose or not args.quiet),
+            )
+        print(
+            f"[1/3] Mapping agent done: adapter={map_result.adapter_id} "
+            f"schema_errors={map_result.best_schema_error_count} "
+            f"semantic_errors={map_result.best_semantic_error_count} "
+            f"iterations={map_result.iterations} tool_calls={map_result.total_tool_calls}",
+            flush=True,
+        )
 
     print(f"[2/3] Writing mapping artifacts to: {out_dir}", flush=True)
     _write_json(
@@ -239,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     _write_json(
         out_dir / "pipeline_summary.json",
         {
+            "parser_enrichment_enabled": bool(args.enrich_parser),
+            "parser_enrichment_trace_json_path": str(parser_enrichment_trace_json_path) if bool(args.enrich_parser) else None,
+            "parser_enriched_normalized_json_path": str(parser_enriched_normalized_json_path) if bool(args.enrich_parser) else None,
             "mapping": map_result.to_dict(),
             "java": java_result.to_dict(),
             "expected_cdm_json_path": str(expected_cdm_json_path),

@@ -215,6 +215,8 @@ def extract_fx_product_fields(
             "settlementCurrency": None,
             "buyerPartyReference": None,
             "sellerPartyReference": None,
+            "currency2PayerPartyReference": None,
+            "currency2ReceiverPartyReference": None,
         }
 
     out: Dict[str, Any] = {}
@@ -489,6 +491,8 @@ def parse_fpml_fx_with_ruleset(
         settlementCurrency=product_fields.get("settlementCurrency"),
         buyerPartyReference=product_fields.get("buyerPartyReference"),
         sellerPartyReference=product_fields.get("sellerPartyReference"),
+        currency2PayerPartyReference=product_fields.get("currency2PayerPartyReference"),
+        currency2ReceiverPartyReference=product_fields.get("currency2ReceiverPartyReference"),
         sourceProduct=adapter_id,
         sourceNamespace=source_namespace,
         sourceVersion=source_version,

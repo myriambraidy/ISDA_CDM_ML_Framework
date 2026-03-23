@@ -74,10 +74,15 @@ class NormalizedFxForward:
     settlementCurrency: Optional[str] = None
     buyerPartyReference: Optional[str] = None
     sellerPartyReference: Optional[str] = None
+    #: FpML exchangedCurrency2 payer/receiver — drives CDM SettlementPayout.payerReceiver (Rosetta)
+    currency2PayerPartyReference: Optional[str] = None
+    currency2ReceiverPartyReference: Optional[str] = None
     sourceProduct: str = "fxForward"
     sourceNamespace: Optional[str] = None
     sourceVersion: Optional[str] = None
     llm_recovered_fields: List[str] = field(default_factory=list)
+    #: Override ISDA productQualifier in CDM taxonomy (agent / rules enrichment)
+    productTaxonomyQualifier: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -99,6 +104,12 @@ class NormalizedFxForward:
             data["buyerPartyReference"] = self.buyerPartyReference
         if self.sellerPartyReference is not None:
             data["sellerPartyReference"] = self.sellerPartyReference
+        if self.currency2PayerPartyReference is not None:
+            data["currency2PayerPartyReference"] = self.currency2PayerPartyReference
+        if self.currency2ReceiverPartyReference is not None:
+            data["currency2ReceiverPartyReference"] = self.currency2ReceiverPartyReference
+        if self.productTaxonomyQualifier is not None:
+            data["productTaxonomyQualifier"] = self.productTaxonomyQualifier
         return data
 
     @classmethod
@@ -117,9 +128,13 @@ class NormalizedFxForward:
             settlementCurrency=data.get("settlementCurrency"),
             buyerPartyReference=data.get("buyerPartyReference"),
             sellerPartyReference=data.get("sellerPartyReference"),
+            currency2PayerPartyReference=data.get("currency2PayerPartyReference"),
+            currency2ReceiverPartyReference=data.get("currency2ReceiverPartyReference"),
             sourceProduct=data.get("sourceProduct", "fxForward"),
             sourceNamespace=data.get("sourceNamespace"),
             sourceVersion=data.get("sourceVersion"),
+            llm_recovered_fields=list(data.get("llm_recovered_fields", [])),
+            productTaxonomyQualifier=data.get("productTaxonomyQualifier"),
         )
 
 
@@ -128,16 +143,29 @@ class ConversionResult:
     ok: bool
     normalized: Optional[NormalizedFxForward] = None
     cdm: Optional[Dict[str, Any]] = None
+    deterministic_cdm: Optional[Dict[str, Any]] = None
+    mapping_agent_cdm: Optional[Dict[str, Any]] = None
     validation: Optional[ValidationReport] = None
     errors: List[ValidationIssue] = field(default_factory=list)
+    #: Optional trace from agent enrichment (LEI, taxonomy, addresses, diff-fix)
+    enrichment_trace: Optional[Dict[str, Any]] = None
+    #: Compliance status contract for deterministic + mapping stages.
+    compliance: Optional[Dict[str, Any]] = None
+    #: Optional machine-readable review ticket for manual triage.
+    review_ticket: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ok": self.ok,
             "normalized": self.normalized.to_dict() if self.normalized else None,
             "cdm": self.cdm,
+            "deterministic_cdm": self.deterministic_cdm,
+            "mapping_agent_cdm": self.mapping_agent_cdm,
             "validation": self.validation.to_dict() if self.validation else None,
             "errors": [e.to_dict() for e in self.errors],
+            "enrichment_trace": self.enrichment_trace,
+            "compliance": self.compliance,
+            "review_ticket": self.review_ticket,
         }
 
 

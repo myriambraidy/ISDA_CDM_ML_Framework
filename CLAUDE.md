@@ -56,7 +56,18 @@ The pipeline has four distinct stages, each in its own module:
 
 **Types** (`fpml_cdm/types.py`): `NormalizedFxForward`, `ConversionResult`, `ValidationReport`, `ValidationIssue`, `MappingScore`, `ParserError`, `ErrorCode`.
 
-**Public API** (exported from `fpml_cdm/__init__.py`): `parse_fpml_fx`, `parse_fpml_xml`, `transform_to_cdm_v6`, `validate_transformation`, `validate_schema_data`, `validate_conversion_files`, `convert_fpml_to_cdm`.
+**Public API** (exported from `fpml_cdm/__init__.py`): `parse_fpml_fx`, `parse_fpml_xml`, `transform_to_cdm_v6`, `validate_transformation`, `validate_schema_data`, `validate_conversion_files`, `convert_fpml_to_cdm`, `EnrichmentConfig`.
+
+### Optional agent-style enrichment (Phase 3)
+
+`convert_fpml_to_cdm(fpml_path, enrichment=EnrichmentConfig(...))` — see `fpml_cdm/agents/`:
+
+- **LEI**: `LocalBicLeiTable` / `GleifLeiResolver` / `ChainedLeiResolver` — BIC-like `party.name` → `party.lei` + CDM LEI `partyId` in transformer.
+- **Taxonomy**: `taxonomy_mode` — `deterministic` (default qualifier only), `rules_ndf` (NDF heuristic → `ForeignExchange_NDF`), `agent` (+ `taxonomy_llm`).
+- **Addresses**: `apply_document_addresses=True` runs `apply_document_address_pattern` (tradeLot `location` + `observable`; conservative vs strict CDM schema).
+- **Diff-and-fix**: `run_diff_fix=True`, optional `diff_fix_llm` — deterministic fixes + optional LLM JSON patch hook.
+
+Trace: `ConversionResult.enrichment_trace`.
 
 ## Test Fixtures
 

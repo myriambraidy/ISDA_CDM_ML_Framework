@@ -93,7 +93,9 @@ def _float_equal(left: Optional[float], right: Optional[float], tol: float) -> b
     return abs(left - right) <= tol
 
 
-def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -> Tuple[List[ValidationIssue], MappingScore]:
+def _semantic_validation_fx_forward_like(
+    model: NormalizedFxForward, cdm_data: Dict[str, Any]
+) -> Tuple[List[ValidationIssue], MappingScore]:
     issues: List[ValidationIssue] = []
 
     trade = cdm_data.get("trade", {})
@@ -203,18 +205,24 @@ def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -
         )
 
     payer_receiver = settlement_payout.get("payerReceiver", {})
-    counterparties = {cp.get("partyReference", {}).get("globalReference"): cp.get("role")
-                      for cp in trade.get("counterparty", [])}
-    if model.buyerPartyReference:
-        expected_payer_role = counterparties.get(model.buyerPartyReference, "Party1")
+    counterparties: Dict[str, str] = {}
+    for cp in trade.get("counterparty", []):
+        ref = cp.get("partyReference", {})
+        key = ref.get("externalReference") or ref.get("globalReference")
+        if key:
+            counterparties[key] = cp.get("role", "")
+    payer_src = model.currency2PayerPartyReference or model.buyerPartyReference
+    if payer_src:
+        expected_payer_role = counterparties.get(payer_src, "Party1")
         cdm_payer = payer_receiver.get("payer")
         check(
             cdm_payer == expected_payer_role,
             f"payer role mismatch: model={expected_payer_role}, cdm={cdm_payer}",
             "trade.product.economicTerms.payout[0].SettlementPayout.payerReceiver.payer",
         )
-    if model.sellerPartyReference:
-        expected_receiver_role = counterparties.get(model.sellerPartyReference, "Party2")
+    receiver_src = model.currency2ReceiverPartyReference or model.sellerPartyReference
+    if receiver_src:
+        expected_receiver_role = counterparties.get(receiver_src, "Party2")
         cdm_receiver = payer_receiver.get("receiver")
         check(
             cdm_receiver == expected_receiver_role,
@@ -229,6 +237,14 @@ def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -
         accuracy_percent=accuracy,
     )
     return issues, mapping_score
+
+
+def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -> Tuple[List[ValidationIssue], MappingScore]:
+    adapter_id = (model.sourceProduct or "").strip()
+    if adapter_id in {"fxForward", "fxSingleLeg"}:
+        return _semantic_validation_fx_forward_like(model, cdm_data)
+    # Conservative fallback while new adapters are onboarded.
+    return _semantic_validation_fx_forward_like(model, cdm_data)
 
 
 def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> ValidationReport:

@@ -93,6 +93,20 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "exchangedCurrency1/receiverPartyReference/@href",
                 ],
             },
+            "currency2PayerPartyReference": {
+                "required": False,
+                "parser": "href",
+                "candidates": [
+                    "exchangedCurrency2/payerPartyReference/@href",
+                ],
+            },
+            "currency2ReceiverPartyReference": {
+                "required": False,
+                "parser": "href",
+                "candidates": [
+                    "exchangedCurrency2/receiverPartyReference/@href",
+                ],
+            },
         },
         "derived": {
             # Disabled by default so the deterministic baseline stays identical.
@@ -183,6 +197,20 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                 "candidates": [
                     "sellerPartyReference/@href",
                     "exchangedCurrency1/receiverPartyReference/@href",
+                ],
+            },
+            "currency2PayerPartyReference": {
+                "required": False,
+                "parser": "href",
+                "candidates": [
+                    "exchangedCurrency2/payerPartyReference/@href",
+                ],
+            },
+            "currency2ReceiverPartyReference": {
+                "required": False,
+                "parser": "href",
+                "candidates": [
+                    "exchangedCurrency2/receiverPartyReference/@href",
                 ],
             },
         },

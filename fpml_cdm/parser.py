@@ -271,9 +271,20 @@ def parse_fpml_root(
     trade_identifiers = []
     if trade_header is not None:
         for pti in _iter_children_local(trade_header, "partyTradeIdentifier"):
-            trade_id = _text(_find_child_local(pti, "tradeId"))
+            trade_id_elem = _find_child_local(pti, "tradeId")
+            trade_id = _text(trade_id_elem)
             if trade_id:
-                trade_identifiers.append({"tradeId": trade_id})
+                entry: Dict[str, str] = {"tradeId": trade_id}
+                party_ref = _find_child_local(pti, "partyReference")
+                if party_ref is not None:
+                    href = party_ref.get("href")
+                    if href:
+                        entry["issuer"] = href
+                if trade_id_elem is not None:
+                    scheme = trade_id_elem.get("tradeIdScheme")
+                    if scheme:
+                        entry["scheme"] = scheme
+                trade_identifiers.append(entry)
 
     # Ruleset-driven extraction: evaluate candidate paths deterministically.
     from .ruleset_engine import extract_fx_product_fields
@@ -299,6 +310,8 @@ def parse_fpml_root(
 
     buyer_party_reference = product_fields.get("buyerPartyReference")
     seller_party_reference = product_fields.get("sellerPartyReference")
+    currency2_payer = product_fields.get("currency2PayerPartyReference")
+    currency2_receiver = product_fields.get("currency2ReceiverPartyReference")
 
     parties = []
     for party in _iter_descendants_local(root, "party"):
@@ -331,6 +344,8 @@ def parse_fpml_root(
         settlementCurrency=settlement_currency,
         buyerPartyReference=buyer_party_reference,
         sellerPartyReference=seller_party_reference,
+        currency2PayerPartyReference=currency2_payer,
+        currency2ReceiverPartyReference=currency2_receiver,
         sourceProduct=source_product,
         sourceNamespace=source_namespace,
         sourceVersion=source_version,

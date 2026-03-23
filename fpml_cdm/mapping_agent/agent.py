@@ -64,11 +64,12 @@ Rules:
 """
 
 
-def _score_from_validation_summary(result: Dict[str, Any]) -> Tuple[int, int]:
+def _score_from_validation_summary(result: Dict[str, Any]) -> Tuple[int, int, int]:
     summary = result.get("validation_summary") or {}
     schema_err = int(summary.get("schema_error_count", 0))
     semantic_err = int(summary.get("semantic_error_count", 0))
-    return (schema_err, semantic_err)
+    rosetta_fail = int(summary.get("rosetta_failure_count", 0))
+    return (schema_err, semantic_err, rosetta_fail)
 
 
 def _format_problem_statement(best_report: Dict[str, Any]) -> str:
@@ -128,6 +129,8 @@ def _build_registry() -> ToolRegistry:
                     "fpml_path": {"type": "string"},
                     "adapter_id": {"type": "string"},
                     "patch": {"type": "object", "additionalProperties": True},
+                    "enable_rosetta": {"type": "boolean"},
+                    "rosetta_timeout_seconds": {"type": "integer", "minimum": 1},
                 },
                 "required": ["fpml_path", "adapter_id", "patch"],
                 "additionalProperties": False,
@@ -291,7 +294,7 @@ def run_mapping_agent(
                 cdm,
                 timeout_seconds=config.rosetta_timeout_seconds,
             )
-            rosetta_fail_count = len(ros.failures) if not ros.valid else 0
+            rosetta_fail_count = 0 if ros.valid else max(1, len(ros.failures))
 
         if (schema_err, semantic_err, rosetta_fail_count) < best_key:
             best_key = (schema_err, semantic_err, rosetta_fail_count)
@@ -315,6 +318,8 @@ def run_mapping_agent(
                 f"Initial best adapter: {best_adapter}\n"
                 f"{problem_statement}\n\n"
                 "Propose a structured patch and call run_conversion_with_patch.\n"
+                f"Set enable_rosetta={'true' if config.enable_rosetta else 'false'} and "
+                f"rosetta_timeout_seconds={config.rosetta_timeout_seconds} in run_conversion_with_patch.\n"
                 "If schema errors are 0 but semantic errors remain, focus on semantic mismatches.\n"
             ),
         }
@@ -330,7 +335,9 @@ def run_mapping_agent(
     last_tool_key = ""
     repeat_count = 0
 
+    last_iteration = 0
     for iteration in range(config.max_iterations):
+        last_iteration = iteration + 1
         elapsed = time.time() - start_time
         if elapsed > config.timeout_seconds:
             return MappingAgentResult(
@@ -464,22 +471,12 @@ def run_mapping_agent(
                     if "validation_summary" not in result_obj:
                         continue
                     new_key = _score_from_validation_summary(result_obj)
-                    rosetta_fail_count = 0
-                    if config.enable_rosetta:
-                        from fpml_cdm.rosetta_validator import validate_cdm_rosetta
-
-                        ros = validate_cdm_rosetta(
-                            result_obj.get("cdm_json"),
-                            timeout_seconds=config.rosetta_timeout_seconds,
-                        )
-                        rosetta_fail_count = len(ros.failures) if not ros.valid else 0
-
-                    new_key_full = (new_key[0], new_key[1], rosetta_fail_count)
+                    new_key_full = new_key
                     if new_key_full < best_key:
                         best_key = new_key_full
                         best_schema_err = new_key_full[0]
                         best_sem_err = new_key_full[1]
-                        best_rosetta_failure_count = int(rosetta_fail_count)
+                        best_rosetta_failure_count = int(new_key_full[2])
                         best_adapter = result_obj.get("adapter_id", best_adapter)
                         best_cdm_json = result_obj.get("cdm_json") or best_cdm_json
                         best_normalized_json = result_obj.get("normalized") or best_normalized_json
@@ -514,7 +511,7 @@ def run_mapping_agent(
         best_semantic_error_count=int(best_sem_err),
         best_rosetta_failure_count=int(best_rosetta_failure_count),
         adapter_id=str(best_adapter),
-        iterations=config.max_iterations,
+        iterations=last_iteration,
         total_tool_calls=total_tool_calls,
         duration_seconds=elapsed,
         trace=trace,

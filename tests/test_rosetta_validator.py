@@ -8,12 +8,14 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fpml_cdm.rosetta_validator import (
     RosettaValidationResult,
     find_jar,
     java_available,
     validate_cdm_rosetta,
+    validate_cdm_rosetta_with_retry,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -62,6 +64,23 @@ class RosettaValidatorResultTests(unittest.TestCase):
         d = result.to_dict()
         self.assertTrue(d["valid"])
         self.assertEqual(d["failureCount"], 0)
+
+    def test_retry_helper_retries_transient_error(self):
+        seq = [
+            RosettaValidationResult(valid=False, failures=[], error="Rosetta validator timed out after 1s", exit_code=-1),
+            RosettaValidationResult(valid=True, failures=[], exit_code=0),
+        ]
+        with patch("fpml_cdm.rosetta_validator.find_jar", return_value=Path("dummy.jar")), patch(
+            "fpml_cdm.rosetta_validator.java_available", return_value=True
+        ), patch("fpml_cdm.rosetta_validator.validate_cdm_rosetta", side_effect=seq):
+            out = validate_cdm_rosetta_with_retry({"trade": {}}, timeout_seconds=1, max_attempts=2)
+        self.assertTrue(out.valid)
+
+    def test_retry_helper_fails_closed_on_missing_infra(self):
+        with patch("fpml_cdm.rosetta_validator.find_jar", return_value=None):
+            out = validate_cdm_rosetta_with_retry({"trade": {}}, max_attempts=2)
+        self.assertFalse(out.valid)
+        self.assertIn("JAR not found", out.error or "")
 
 
 @unittest.skipUnless(find_jar() and java_available(), "Rosetta JAR or Java not available")

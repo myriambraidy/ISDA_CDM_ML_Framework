@@ -6,8 +6,10 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fpml_cdm import ErrorCode, convert_fpml_to_cdm
+from fpml_cdm.rosetta_validator import RosettaValidationResult
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -20,7 +22,11 @@ def _stable_hash(data) -> str:
 
 class PipelineTests(unittest.TestCase):
     def test_convert_pipeline_success(self) -> None:
-        result = convert_fpml_to_cdm(str(FIXTURES / "fpml" / "fx_forward.xml"))
+        with patch(
+            "fpml_cdm.pipeline.validate_cdm_rosetta_with_retry",
+            return_value=RosettaValidationResult(valid=True, failures=[]),
+        ):
+            result = convert_fpml_to_cdm(str(FIXTURES / "fpml" / "fx_forward.xml"))
         self.assertTrue(result.ok)
         self.assertIsNotNone(result.normalized)
         self.assertIsNotNone(result.cdm)
@@ -32,7 +38,11 @@ class PipelineTests(unittest.TestCase):
         normalized_hashes = []
 
         for _ in range(3):
-            result = convert_fpml_to_cdm(str(FIXTURES / "fpml" / "fx_forward.xml"))
+            with patch(
+                "fpml_cdm.pipeline.validate_cdm_rosetta_with_retry",
+                return_value=RosettaValidationResult(valid=True, failures=[]),
+            ):
+                result = convert_fpml_to_cdm(str(FIXTURES / "fpml" / "fx_forward.xml"))
             self.assertTrue(result.ok)
             cdm_hashes.append(_stable_hash(result.cdm))
             normalized_hashes.append(_stable_hash(result.normalized.to_dict()))
@@ -44,6 +54,18 @@ class PipelineTests(unittest.TestCase):
         result = convert_fpml_to_cdm(str(FIXTURES / "fpml" / "unsupported_fx_digital_option.xml"))
         self.assertFalse(result.ok)
         self.assertTrue(any(issue.code == ErrorCode.UNSUPPORTED_PRODUCT.value for issue in result.errors))
+
+    def test_convert_marks_review_required_when_rosetta_unavailable(self) -> None:
+        with patch(
+            "fpml_cdm.pipeline.validate_cdm_rosetta_with_retry",
+            return_value=RosettaValidationResult(valid=False, failures=[], error="Java not found"),
+        ):
+            result = convert_fpml_to_cdm(str(FIXTURES / "fpml" / "fx_forward.xml"))
+        self.assertFalse(result.ok)
+        self.assertIsNotNone(result.compliance)
+        self.assertEqual(result.compliance["failure_reason"], "ROSETTA_INFRA_UNAVAILABLE")
+        self.assertTrue(result.compliance["review_required"])
+        self.assertIsNotNone(result.review_ticket)
 
     def test_cli_convert_command_passes(self) -> None:
         cmd = [

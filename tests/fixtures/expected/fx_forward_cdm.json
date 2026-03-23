@@ -1,77 +1,12 @@
 {
   "trade": {
-    "tradeDate": {
-      "value": "2024-06-01"
-    },
-    "tradeIdentifier": [
-      {
-        "assignedIdentifier": [
-          {
-            "identifier": {
-              "value": "FX2024060100123"
-            }
-          }
-        ],
-        "issuer": {
-          "value": "party1"
-        }
-      }
-    ],
-    "party": [
-      {
-        "partyId": [
-          {
-            "identifier": {
-              "value": "party1"
-            }
-          }
-        ],
-        "name": {
-          "value": "Global Bank A"
-        }
-      },
-      {
-        "partyId": [
-          {
-            "identifier": {
-              "value": "party2"
-            }
-          }
-        ],
-        "name": {
-          "value": "International Bank B"
-        }
-      }
-    ],
-    "counterparty": [
-      {
-        "role": "Party1",
-        "partyReference": {
-          "globalReference": "party1"
-        }
-      },
-      {
-        "role": "Party2",
-        "partyReference": {
-          "globalReference": "party2"
-        }
-      }
-    ],
-    "partyRole": [
-      {
-        "role": "Buyer",
-        "partyReference": {
-          "globalReference": "party1"
-        }
-      },
-      {
-        "role": "Seller",
-        "partyReference": {
-          "globalReference": "party2"
-        }
-      }
-    ],
     "product": {
+      "taxonomy": [
+        {
+          "source": "ISDA",
+          "productQualifier": "ForeignExchange_Spot_Forward"
+        }
+      ],
       "economicTerms": {
         "payout": [
           {
@@ -80,33 +15,54 @@
                 "payer": "Party1",
                 "receiver": "Party2"
               },
-              "settlementTerms": {
-                "settlementDate": {
-                  "valueDate": "2024-09-01"
+              "priceQuantity": {
+                "quantitySchedule": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "quantity-1"
+                  }
                 },
-                "settlementType": "Cash"
+                "priceSchedule": [
+                  {
+                    "address": {
+                      "scope": "DOCUMENT",
+                      "value": "price-1"
+                    }
+                  }
+                ],
+                "meta": {
+                  "globalKey": "f2740ba0"
+                }
+              },
+              "settlementTerms": {
+                "settlementType": "Cash",
+                "settlementDate": {
+                  "valueDate": "2024-09-01",
+                  "meta": {
+                    "globalKey": "751a2f13"
+                  }
+                },
+                "meta": {
+                  "globalKey": "97e499a1"
+                }
               },
               "underlier": {
                 "Observable": {
-                  "value": {
-                    "Asset": {
-                      "Cash": {
-                        "identifier": [
-                          {
-                            "identifier": {
-                              "value": "USD"
-                            },
-                            "identifierType": "CurrencyCode"
-                          }
-                        ]
-                      }
-                    }
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "observable-1"
                   }
                 }
               }
+            },
+            "meta": {
+              "globalKey": "a32f7fb2"
             }
           }
         ]
+      },
+      "meta": {
+        "globalKey": "b2888be3"
       }
     },
     "tradeLot": [
@@ -128,6 +84,14 @@
                     }
                   },
                   "priceType": "ExchangeRate"
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "price-1"
+                    }
+                  ]
                 }
               }
             ],
@@ -140,6 +104,14 @@
                       "value": "USD"
                     }
                   }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-1"
+                    }
+                  ]
                 }
               },
               {
@@ -150,12 +122,153 @@
                       "value": "EUR"
                     }
                   }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-2"
+                    }
+                  ]
                 }
               }
-            ]
+            ],
+            "observable": {
+              "value": {
+                "Asset": {
+                  "Cash": {
+                    "identifier": [
+                      {
+                        "identifier": {
+                          "value": "USD"
+                        },
+                        "identifierType": "CurrencyCode"
+                      }
+                    ]
+                  }
+                }
+              },
+              "meta": {
+                "location": [
+                  {
+                    "scope": "DOCUMENT",
+                    "value": "observable-1"
+                  }
+                ]
+              }
+            },
+            "meta": {
+              "globalKey": "6fe9296d"
+            }
           }
         ]
       }
-    ]
+    ],
+    "counterparty": [
+      {
+        "role": "Party1",
+        "partyReference": {
+          "globalReference": "ac42cbfd",
+          "externalReference": "party1"
+        }
+      },
+      {
+        "role": "Party2",
+        "partyReference": {
+          "globalReference": "e6b0192",
+          "externalReference": "party2"
+        }
+      }
+    ],
+    "tradeIdentifier": [
+      {
+        "issuerReference": {
+          "globalReference": "ac42cbfd",
+          "externalReference": "party1"
+        },
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FX2024060100123"
+            }
+          }
+        ],
+        "meta": {
+          "globalKey": "67c1b9b5"
+        }
+      },
+      {
+        "issuer": {
+          "value": "party1"
+        },
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FX2024060100123"
+            }
+          }
+        ],
+        "meta": {
+          "globalKey": "179d350"
+        }
+      }
+    ],
+    "tradeDate": {
+      "value": "2024-06-01",
+      "meta": {
+        "globalKey": "5742d448"
+      }
+    },
+    "party": [
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party1"
+            }
+          }
+        ],
+        "name": {
+          "value": "Global Bank A"
+        },
+        "meta": {
+          "externalKey": "party1",
+          "globalKey": "ac42cbfd"
+        }
+      },
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party2"
+            }
+          }
+        ],
+        "name": {
+          "value": "International Bank B"
+        },
+        "meta": {
+          "externalKey": "party2",
+          "globalKey": "e6b0192"
+        }
+      }
+    ],
+    "partyRole": [
+      {
+        "role": "Buyer",
+        "partyReference": {
+          "globalReference": "ac42cbfd"
+        }
+      },
+      {
+        "role": "Seller",
+        "partyReference": {
+          "globalReference": "e6b0192"
+        }
+      }
+    ],
+    "meta": {
+      "globalKey": "5af7ae54"
+    }
   }
 }

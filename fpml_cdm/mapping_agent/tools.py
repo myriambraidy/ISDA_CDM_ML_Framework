@@ -110,7 +110,14 @@ def get_active_ruleset_summary(adapter_id: str) -> Dict[str, Any]:
     }
 
 
-def run_conversion_with_patch(fpml_path: str, patch: Dict[str, Any], adapter_id: str) -> Dict[str, Any]:
+def run_conversion_with_patch(
+    fpml_path: str,
+    patch: Dict[str, Any],
+    adapter_id: str,
+    *,
+    enable_rosetta: bool = False,
+    rosetta_timeout_seconds: int = 60,
+) -> Dict[str, Any]:
     """
     Deterministically apply a structured patch to the ruleset, then run:
       parse (ruleset) → transform → validate
@@ -138,6 +145,18 @@ def run_conversion_with_patch(fpml_path: str, patch: Dict[str, Any], adapter_id:
 
     schema_error_count = sum(1 for e in report.errors if e.code == "SCHEMA_VALIDATION_FAILED")
     semantic_error_count = sum(1 for e in report.errors if e.code == "SEMANTIC_VALIDATION_FAILED")
+    rosetta_failure_count = 0
+    rosetta_report = None
+    if enable_rosetta:
+        from fpml_cdm.rosetta_validator import validate_cdm_rosetta_with_retry
+
+        ros = validate_cdm_rosetta_with_retry(
+            cdm,
+            timeout_seconds=rosetta_timeout_seconds,
+            max_attempts=2,
+        )
+        rosetta_report = ros.to_dict()
+        rosetta_failure_count = 0 if ros.valid else max(1, len(ros.failures))
 
     return {
         "adapter_id": adapter_id,
@@ -149,8 +168,10 @@ def run_conversion_with_patch(fpml_path: str, patch: Dict[str, Any], adapter_id:
         "validation_summary": {
             "schema_error_count": schema_error_count,
             "semantic_error_count": semantic_error_count,
+            "rosetta_failure_count": rosetta_failure_count,
             "error_count_total": len(report.errors),
         },
+        "rosetta_report": rosetta_report,
     }
 
 
@@ -169,8 +190,7 @@ def validate_best_effort(
       - Rosetta is best-effort and optional
     """
     from fpml_cdm.validator import validate_conversion_files
-    from fpml_cdm.rosetta_validator import validate_cdm_rosetta
-    from fpml_cdm.types import ValidationReport
+    from fpml_cdm.rosetta_validator import validate_cdm_rosetta_with_retry
 
     # Re-parse normalized from the source, since validate_conversion_files is
     # source-bound. For patch-based validation, the agent should prefer
@@ -181,9 +201,10 @@ def validate_best_effort(
     rosetta_errors = []
     if enable_rosetta:
         try:
-            ros = validate_cdm_rosetta(
+            ros = validate_cdm_rosetta_with_retry(
                 cdm_json,
                 timeout_seconds=rosetta_timeout_seconds,
+                max_attempts=2,
             )
             rosetta_report = ros.to_dict()
             rosetta_errors = ros.to_issues()
@@ -205,8 +226,10 @@ def _write_tmp_cdm_json(cdm_json: Dict[str, Any]) -> str:
     validate_conversion_files expects a JSON path; write to a temp file.
     """
     import tempfile
+    import os
 
-    fd, path = tempfile.mkstemp(prefix="cdm_", suffix=".json")
+    _fd, path = tempfile.mkstemp(prefix="cdm_", suffix=".json")
+    os.close(_fd)
     # Avoid depending on tempfile.NamedTemporaryFile behavior on Windows.
     Path(path).write_text(json.dumps(cdm_json), encoding="utf-8")
     return path
