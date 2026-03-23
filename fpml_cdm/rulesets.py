@@ -61,8 +61,10 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "nonDeliverableSettlement",
                     "nonDeliverableForward",
                 ],
+                # Rosetta-type expectations for FX spot/forward variants classify
+                # these trades as Cash unless NDF drives settlementCurrency details.
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                "physical_value": "CASH",
             },
             "settlementCurrency": {
                 "required": False,
@@ -77,6 +79,9 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                 "parser": "href",
                 "candidates": [
                     "buyerPartyReference/@href",
+                    # Some FpML variants encode payer/receiver under the exchangedCurrency legs.
+                    # Our normalized model treats "buyerPartyReference" as the payer party.
+                    "exchangedCurrency1/payerPartyReference/@href",
                 ],
             },
             "sellerPartyReference": {
@@ -84,6 +89,8 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                 "parser": "href",
                 "candidates": [
                     "sellerPartyReference/@href",
+                    # Our normalized model treats "sellerPartyReference" as the receiver party.
+                    "exchangedCurrency1/receiverPartyReference/@href",
                 ],
             },
         },
@@ -149,8 +156,10 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "nonDeliverableSettlement",
                     "nonDeliverableForward",
                 ],
+                # Rosetta-type expectations for FX spot/forward variants classify
+                # these trades as Cash unless NDF drives settlementCurrency details.
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                "physical_value": "CASH",
             },
             "settlementCurrency": {
                 "required": False,
@@ -165,6 +174,7 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                 "parser": "href",
                 "candidates": [
                     "buyerPartyReference/@href",
+                    "exchangedCurrency1/payerPartyReference/@href",
                 ],
             },
             "sellerPartyReference": {
@@ -172,6 +182,7 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                 "parser": "href",
                 "candidates": [
                     "sellerPartyReference/@href",
+                    "exchangedCurrency1/receiverPartyReference/@href",
                 ],
             },
         },

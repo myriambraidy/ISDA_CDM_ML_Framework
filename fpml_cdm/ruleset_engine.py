@@ -120,6 +120,54 @@ def _resolve_value_path(root: ET.Element, local_path: str) -> Optional[str]:
     return _text(cur)
 
 
+def _resolve_value_path_with_ndf_descendant_anchor(
+    root: ET.Element, local_path: str
+) -> Optional[str]:
+    """
+    Like `_resolve_value_path`, but if the first path segment is an NDF container
+    (`nonDeliverableSettlement` or `nonDeliverableForward`), allow that container
+    to appear anywhere under `root` (descendant search), not just as a direct child.
+
+    This keeps candidate evaluation deterministic while being robust to nesting
+    differences in vendor FpML.
+    """
+    if not local_path:
+        return None
+
+    segments = [seg for seg in local_path.split("/") if seg]
+    if not segments:
+        return None
+
+    attr_name: Optional[str] = None
+    if segments and segments[-1].startswith("@"):
+        attr_name = segments[-1][1:]
+        segments = segments[:-1]
+    if not segments:
+        return None
+
+    first = segments[0]
+    if first in ("nonDeliverableSettlement", "nonDeliverableForward"):
+        container = _find_descendant_local(root, first)
+        if container is None:
+            return None
+        cur: Optional[ET.Element] = container
+        for seg in segments[1:]:
+            if cur is None:
+                return None
+            cur = _find_child_local(cur, seg)
+        if cur is None:
+            return None
+        if attr_name:
+            raw = cur.get(attr_name)
+            if raw is None:
+                return None
+            raw = raw.strip()
+            return raw or None
+        return _text(cur)
+
+    return _resolve_value_path(root, local_path)
+
+
 def _parse_field_value(
     *,
     parser: str,
@@ -181,7 +229,8 @@ def extract_fx_product_fields(
 
         found_ndf = False
         for cand in ndf_candidates:
-            if _resolve_element_path(product_node, str(cand)) is not None:
+            # Keep NDF detection robust: consider descendant presence.
+            if _find_descendant_local(product_node, str(cand)) is not None:
                 found_ndf = True
                 break
         out["settlementType"] = cash_value if found_ndf else physical_value
@@ -199,7 +248,9 @@ def extract_fx_product_fields(
         parse_errors: List[List[ValidationIssue]] = []
 
         for cand in candidates:
-            raw = _resolve_value_path(product_node, str(cand))
+            # NDF containers can be nested in some vendor payloads; allow
+            # descendant anchoring for settlementCurrency candidates.
+            raw = _resolve_value_path_with_ndf_descendant_anchor(product_node, str(cand))
             if raw is None:
                 continue
 

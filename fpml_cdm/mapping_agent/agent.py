@@ -21,6 +21,8 @@ class MappingAgentConfig:
     max_tool_calls: int = 80
     timeout_seconds: int = 300
     semantic_no_improve_limit: int = 3
+    enable_rosetta: bool = False
+    rosetta_timeout_seconds: int = 60
 
 
 @dataclass
@@ -35,11 +37,13 @@ class MappingAgentResult:
     total_tool_calls: int = 0
     duration_seconds: float = 0.0
     trace: List[Dict[str, Any]] = field(default_factory=list)
+    best_rosetta_failure_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "best_schema_error_count": self.best_schema_error_count,
             "best_semantic_error_count": self.best_semantic_error_count,
+            "best_rosetta_failure_count": self.best_rosetta_failure_count,
             "adapter_id": self.adapter_id,
             "iterations": self.iterations,
             "total_tool_calls": self.total_tool_calls,
@@ -260,7 +264,10 @@ def run_mapping_agent(
     from fpml_cdm.transformer import transform_to_cdm_v6
     from fpml_cdm.validator import validate_normalized_and_cdm
 
-    best_key: Tuple[int, int] = (10**9, 10**9)
+    # Always keep a 3-tuple score so we can optionally include Rosetta failures.
+    # When Rosetta is disabled, rosetta_fail_count is always 0.
+    best_key: Tuple[int, int, int] = (10**9, 10**9, 10**9)
+    best_rosetta_failure_count = 0
     for adapter_id in adapter_ids:
         base = get_base_ruleset(adapter_id)
         normalized, _ = parse_fpml_fx_with_ruleset(
@@ -276,14 +283,25 @@ def run_mapping_agent(
         schema_err = sum(1 for e in report.errors if e.code == "SCHEMA_VALIDATION_FAILED")
         semantic_err = sum(1 for e in report.errors if e.code == "SEMANTIC_VALIDATION_FAILED")
 
-        if (schema_err, semantic_err) < best_key:
-            best_key = (schema_err, semantic_err)
+        rosetta_fail_count = 0
+        if config.enable_rosetta:
+            from fpml_cdm.rosetta_validator import validate_cdm_rosetta
+
+            ros = validate_cdm_rosetta(
+                cdm,
+                timeout_seconds=config.rosetta_timeout_seconds,
+            )
+            rosetta_fail_count = len(ros.failures) if not ros.valid else 0
+
+        if (schema_err, semantic_err, rosetta_fail_count) < best_key:
+            best_key = (schema_err, semantic_err, rosetta_fail_count)
             best_adapter = adapter_id
             best_cdm_json = cdm
             best_normalized_json = normalized.to_dict()
             best_validation_report_dict = report.to_dict()
             best_schema_err = schema_err
             best_sem_err = semantic_err
+            best_rosetta_failure_count = rosetta_fail_count
 
     assert best_adapter is not None
     assert best_validation_report_dict is not None
@@ -304,6 +322,7 @@ def run_mapping_agent(
 
     no_improve_iters = 0
     last_best_sem = best_sem_err  # type: ignore[assignment]
+    last_best_rosetta_failure_count = best_rosetta_failure_count
 
     total_tool_calls = 0
     total_llm_time = 0.0
@@ -320,6 +339,7 @@ def run_mapping_agent(
                 best_validation_report=best_validation_report_dict,
                 best_schema_error_count=int(best_schema_err),
                 best_semantic_error_count=int(best_sem_err),
+                best_rosetta_failure_count=int(best_rosetta_failure_count),
                 adapter_id=str(best_adapter),
                 iterations=iteration,
                 total_tool_calls=total_tool_calls,
@@ -335,6 +355,7 @@ def run_mapping_agent(
                 best_validation_report=best_validation_report_dict,
                 best_schema_error_count=int(best_schema_err),
                 best_semantic_error_count=int(best_sem_err),
+                best_rosetta_failure_count=int(best_rosetta_failure_count),
                 adapter_id=str(best_adapter),
                 iterations=iteration,
                 total_tool_calls=total_tool_calls,
@@ -443,18 +464,32 @@ def run_mapping_agent(
                     if "validation_summary" not in result_obj:
                         continue
                     new_key = _score_from_validation_summary(result_obj)
-                    if new_key < best_key:
-                        best_key = new_key
-                        best_schema_err = new_key[0]
-                        best_sem_err = new_key[1]
+                    rosetta_fail_count = 0
+                    if config.enable_rosetta:
+                        from fpml_cdm.rosetta_validator import validate_cdm_rosetta
+
+                        ros = validate_cdm_rosetta(
+                            result_obj.get("cdm_json"),
+                            timeout_seconds=config.rosetta_timeout_seconds,
+                        )
+                        rosetta_fail_count = len(ros.failures) if not ros.valid else 0
+
+                    new_key_full = (new_key[0], new_key[1], rosetta_fail_count)
+                    if new_key_full < best_key:
+                        best_key = new_key_full
+                        best_schema_err = new_key_full[0]
+                        best_sem_err = new_key_full[1]
+                        best_rosetta_failure_count = int(rosetta_fail_count)
                         best_adapter = result_obj.get("adapter_id", best_adapter)
                         best_cdm_json = result_obj.get("cdm_json") or best_cdm_json
                         best_normalized_json = result_obj.get("normalized") or best_normalized_json
                         best_validation_report_dict = result_obj.get("validation_report") or best_validation_report_dict
 
-                        if best_sem_err < last_best_sem:
+                        # Improvement in secondary dimensions resets no-improve counter.
+                        if (best_sem_err, best_rosetta_failure_count) < (last_best_sem, last_best_rosetta_failure_count):
                             no_improve_iters = 0
                             last_best_sem = best_sem_err
+                            last_best_rosetta_failure_count = best_rosetta_failure_count
                         else:
                             no_improve_iters += 1
                 except Exception:
@@ -462,7 +497,9 @@ def run_mapping_agent(
                     pass
 
         # Stop if we have a fully valid mapping.
-        if int(best_schema_err) == 0 and int(best_sem_err) == 0:
+        if int(best_schema_err) == 0 and int(best_sem_err) == 0 and (
+            (not config.enable_rosetta) or int(best_rosetta_failure_count) == 0
+        ):
             break
 
         if no_improve_iters >= config.semantic_no_improve_limit:
@@ -475,6 +512,7 @@ def run_mapping_agent(
         best_validation_report=best_validation_report_dict,
         best_schema_error_count=int(best_schema_err),
         best_semantic_error_count=int(best_sem_err),
+        best_rosetta_failure_count=int(best_rosetta_failure_count),
         adapter_id=str(best_adapter),
         iterations=config.max_iterations,
         total_tool_calls=total_tool_calls,

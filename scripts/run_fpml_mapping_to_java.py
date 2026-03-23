@@ -144,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         max_tool_calls=args.mapping_max_tool_calls,
         timeout_seconds=args.mapping_timeout,
         semantic_no_improve_limit=args.mapping_no_improve,
+        enable_rosetta=bool(args.rosetta),
+        rosetta_timeout_seconds=int(os.environ.get("FPML_CDM_ROSETTA_TIMEOUT", "120")),
     )
     java_cfg = AgentConfig(
         max_iterations=args.java_max_iterations,
@@ -187,6 +189,26 @@ def main(argv: list[str] | None = None) -> int:
             "best_cdm_json": map_result.best_cdm_json,
         },
     )
+
+    # Deterministic Rosetta type validation output (so `--rosetta` is not
+    # dependent on the LLM calling validate_best_effort).
+    if bool(args.rosetta):
+        from fpml_cdm.rosetta_validator import validate_cdm_rosetta
+
+        rosetta_report = validate_cdm_rosetta(
+            map_result.best_cdm_json,
+            timeout_seconds=int(os.environ.get("FPML_CDM_ROSETTA_TIMEOUT", "120")),
+            target_type="trade",
+        )
+        rosetta_report_path = out_dir / "rosetta_report.json"
+        _write_json(
+            rosetta_report_path,
+            rosetta_report.to_dict(),
+        )
+        print(
+            f"[2/3] Rosetta validation: valid={rosetta_report.valid} failures={len(rosetta_report.failures)}",
+            flush=True,
+        )
 
     # Java codegen agent.
     print(f"[2/3] Java codegen start: expected_cdm={expected_cdm_json_path}", flush=True)

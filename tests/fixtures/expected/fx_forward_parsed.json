@@ -11,7 +11,7 @@
   "amount2": 9174311.93,
   "exchangeRate": 1.09,
   "valueDate": "2024-09-01",
-  "settlementType": "PHYSICAL",
+  "settlementType": "CASH",
   "parties": [
     {
       "id": "party1",

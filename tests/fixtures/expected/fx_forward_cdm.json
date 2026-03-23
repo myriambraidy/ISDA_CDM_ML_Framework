@@ -84,7 +84,7 @@
                 "settlementDate": {
                   "valueDate": "2024-09-01"
                 },
-                "settlementType": "Physical"
+                "settlementType": "Cash"
               },
               "underlier": {
                 "Observable": {
