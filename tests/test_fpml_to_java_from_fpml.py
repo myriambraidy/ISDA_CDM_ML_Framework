@@ -91,9 +91,9 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
                     )
 
                     self.assertTrue(java_result.success)
-                    self.assertIsNotNone(mapping_result)
+                    self.assertIsNone(mapping_result)
                     self.assertEqual(Path(cdm_json_path), cdm_json_path_expected)
-                    mock_mapping.assert_called_once()
+                    mock_mapping.assert_not_called()
 
     def test_generate_java_from_fpml_runs_mapping_when_deterministic_invalid(self) -> None:
         fpml_path = FIXTURES / "missing_value_date.xml"

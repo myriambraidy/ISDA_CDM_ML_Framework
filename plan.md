@@ -1,318 +1,269 @@
-# Plan: Faster Java-Gen Agent Loop
-
-## 1. Current performance issues
-
-- **LLM-bound**: In a typical run (~~16 iterations, 22 tool calls), almost all time is spent waiting for the model (~~476s LLM vs ~4s tools). The bottleneck is inference, not tools or network.
-- **Too many rounds**: Many turns contain a single tool call (e.g. get_java_template, one lookup, write_java_file, compile_java, run_java, diff_json each in their own round). Each round is a full request/response with full conversation history.
-- **Large, growing context**: Every request resends system prompt + user message + all prior assistant messages and tool results. Early results (e.g. `inspect_cdm_json`, many schema lookups) are large and stay in context for the rest of the run, increasing tokens and latency on every subsequent call.
-- **Model latency**: The current default (z-ai/glm-4.6) can take tens of seconds to over two minutes per response on large tool-calling turns; switching to a faster model reduces time per round.
-
-**What we do not change**: The 13 tools, their signatures, or `tools.json`; the shape of `AgentResult` and `AgentConfig`; the public `run_agent(...)` signature and return contract; the trace structure (`tool_call` / `tool_result` with `result_preview`) used by `--trace-output` and `_partial_result_from_trace`; the CLI’s output format and exit codes; or the handling of `finish` (success, java_file, match_percentage, summary from tool args). All existing tests must keep passing.
 
 ---
 
-## 2. Goals
+# Plan: Scale Parser & Transformer — All FX Products (Extensible to Non-FX)
 
-- **Fewer LLM rounds**: Batch tool use where possible; run compile → run_java → diff_json deterministically after a successful compile so the model does not need separate turns for run and diff.
-- **Smaller context**: Optionally summarize or truncate older tool results so we do not resend the full history every time.
-- **Deterministic steps**: After `compile_java` succeeds, automatically execute `run_java` and `diff_json` and append their results to the conversation so the next LLM turn sees the diff and can call `finish` or `patch_java_file`.
-- **Faster model**: Use `google/gemini-2.5-flash` as the default for the generate-java command (OpenRouter) to reduce latency per round.
+**Status:** planning only — **do not implement** until this plan is accepted.
 
 ---
 
-## 3. Implementation phases
+## Executive summary
 
-### Phase 1: Switch default model to google/gemini-2.5-flash
-
-- **Where**: `fpml_cdm/cli.py` (generate-java parser), and optionally `.env.example` / docs if we mention the default.
-- **Change**: Set the default for `--model` from `z-ai/glm-4.6` to `google/gemini-2.5-flash`. Keep `--model` overridable so behavior is unchanged except for the default.
-- **Risk**: None for existing behavior; only default changes. If the new model behaves worse on some CDM files, users can pass `--model z-ai/glm-4.6` (or another model).
-- **Tests**: Update any test or doc that asserts the default model string; existing mock-based agent tests do not depend on model name.
-
-### Phase 2: Deterministic compile → run_java → diff_json
-
-- **Intent**: After the agent executes a tool and that tool is `compile_java` with a successful result, we run `run_java` and `diff_json` ourselves and append their results to `messages` and `trace` so the next LLM turn sees the diff without needing two extra rounds.
-- **Where**: `fpml_cdm/java_gen/agent.py` inside the main loop, after the `for tool_call in message.tool_calls` loop.
-- **Logic**:
-  1. After processing all tool calls in the current message, check whether the **last** tool executed was `compile_java` and its result JSON contains `"success": true`.
-  2. If yes:
-    - Call `run_java(class_name="CdmTradeBuilder", timeout=30)` (or same defaults as in `tools.py`). Use `cdm_json_path` (already in scope) for the diff.
-    - From `run_java` result take `stdout` (the Java program output). If `success` is false or stdout empty, do not run diff; optionally append a single synthetic tool result for run_java so the model sees the failure.
-    - If run_java succeeded and stdout is non-empty: call `diff_json(expected_json_path=cdm_json_path, actual_json=run_result["stdout"])`.
-    - Append to `messages`: one assistant message with two tool_calls (synthetic ids, e.g. `call_det_run`, `call_det_diff`) with `function.name` and `function.arguments` for `run_java` and `diff_json`; then two tool messages with `role: "tool"`, `tool_call_id`, and `content` as the JSON result strings.
-    - Append to `trace`: two `tool_call` entries and two `tool_result` entries (with `result_preview` as first 500 chars of each result).
-    - Increment `total_tool_calls` by 2. Do **not** invoke the LLM again in the same iteration; the next iteration will see the new messages and decide finish or patch.
-  3. If the last tool was not a successful compile_java, do nothing (current behavior).
-- **Edge cases**:
-  - Compile fails: no deterministic step; model gets compile error and can call patch_java_file or other tools as today.
-  - run_java fails (no JAR, timeout, etc.): we can still append run_java result so the model sees the failure and can retry or report; only skip calling diff_json when run_java did not produce usable stdout.
-  - Multiple tool calls in one turn including compile_java: only trigger deterministic step if the **last** tool in that turn was compile_java and it succeeded (so we don’t inject in the middle of a batch).
-- **Compatibility**: The conversation shape stays valid (assistant with tool_calls, then tool results in order). The LLM still receives the same information it would have if it had asked for run_java and diff_json in two separate turns. `_partial_result_from_trace` and trace-output still see the same trace entry types. `finish` is only ever called by the model, not by the deterministic step.
-- **Tests**: Existing tests use mocks that never return compile_java as the last tool with success; they keep passing. Add a unit test that, with a mock LLM that returns compile_java success once then finish, verifies that the trace contains run_java and diff_json entries and that the run completes (optional but recommended).
-
-### Phase 3: Stronger batching prompt and (optional) shorter tool descriptions
-
-- **Intent**: Encourage the model to do more in fewer turns (batch schema and enum lookups, avoid one-tool-per-turn where possible).
-- **Where**: `fpml_cdm/java_gen/agent.py` (`SYSTEM_PROMPT`), and optionally `fpml_cdm/java_gen/tools.json` (shorten `description` strings).
-- **Prompt changes**: Add or tighten a short “Efficiency” section, e.g.:
-  - “In your first 1–2 turns after inspect_cdm_json and get_java_template, call ALL lookup_cdm_schema and list_enum_values you need in parallel in a single turn. Do not call write_java_file until you have gathered schema and enum info for every type you need.”
-  - Keep existing rules (type_registry, batch patches, etc.) so behavior and correctness are unchanged.
-- **Tool descriptions**: Optionally shorten long descriptions in `tools.json` to reduce input tokens; keep required parameters and semantics so the model still chooses and invokes tools correctly.
-- **Risk**: Prompt changes might change model behavior (e.g. more batching); we do not remove or reorder required steps, so existing successful runs should remain possible. If a run regresses, we can revert the prompt text.
-- **Tests**: No code contract change; mock tests still pass. Manual or integration tests can compare round count before/after.
+This plan describes **how to scale** the deterministic FpML → normalized → CDM pipeline from the current **two adapters** (`fxForward`, `fxSingleLeg`) to **full FX derivative coverage** supported by FpML and your business needs, without rewriting the orchestration for every new product. The strategy rests on five pillars: **inventory-driven scope**, **adapter registry**, **ruleset-first parsing with escape hatches**, **per-product CDM transforms**, and **per-adapter validation + corpus gates**. Non-FX asset classes are **out of scope for implementation** here but **in scope for naming and module layout** so a later phase can plug in rates/credit/equity without a fork.
 
 ---
 
-## 4. Order of work and safeguards
+## 1. Goals
 
-- Implement in order: **Phase 1 → Phase 2 → Phase 3**.
-- After each phase: run the full agent test suite (`tests.test_java_gen.test_agent`, `tests.test_java_gen.test_openrouter_client`) and ensure nothing is broken. For Phase 2, add a test that covers the deterministic path (mock LLM returns compile_java success then finish; assert trace contains run_java and diff_json and result is success).
-- **Do not**: remove or rename tools; change `AgentResult` / `AgentConfig` fields; change the signature or return type of `run_agent`; change the trace entry shape used by `_partial_result_from_trace` or `--trace-output`; or change how `finish` is handled (success, java_file, match_percentage, summary from tool args).
-- **Rollback**: Phase 1 = revert default model string. Phase 2 = remove the block that detects compile_java success and injects run_java/diff_json. Phase 3 = revert prompt/description edits.
-
----
-
-## 5. Summary
-
-
-| Phase | What                                                                               | Where                | Breaks?                      |
-| ----- | ---------------------------------------------------------------------------------- | -------------------- | ---------------------------- |
-| 1     | Default model → google/gemini-2.5-flash                                            | cli.py               | No                           |
-| 2     | After compile_java success, auto run_java + diff_json and append to messages/trace | agent.py             | No; same API and trace shape |
-| 3     | Stronger batching prompt; optional shorter tool descriptions                       | agent.py, tools.json | No; prompt only              |
-
-All changes preserve existing working behavior, public API, and test compatibility while reducing rounds and per-round latency.
+1. Support **all FX derivative product shapes** that the team commits to from FpML (under `<trade>`), not only forward / single-leg spot-forward style trades.
+2. Preserve **one pipeline**: parse → normalize → transform → validate → optional mapping agent → compliance (schema + semantic + Rosetta as configured).
+3. Make **adding a new FX product** a repeatable recipe: matrix row → ruleset + optional extractor → normalized type → transformer → tests → corpus line.
+4. **Non-FX later:** same registry and dispatch ideas; separate normalized packages and transformer modules per asset class.
 
 ---
 
-## 6. Todo list (implementation checklist)
+## 2. What “all FX products” means (scope contract)
 
-Use this list when implementing; check off items as done. Do not implement Phase 4.
+**In scope for this plan**
 
-### Phase 1: Default model
+- FpML elements that represent **FX cash, forwards, swaps, options, and common variants** (NDF, flexible dates, etc.) where the economic terms map to **CDM v6 FX-related product / payout** structures.
+- Products that appear in **your corpora** (official FpML examples + internal files): the **product matrix** is the source of truth for what “all” means in practice.
 
-- [x] **1.1** In `fpml_cdm/cli.py`, change the generate-java `--model` default from `z-ai/glm-4.6` to `google/gemini-2.5-flash`.
-- [x] **1.2** Update any test that asserts the default model string (e.g. `tests.test_java_gen.test_openrouter_client` if it checks the default model in the request).
-- [x] **1.3** Run `tests.test_java_gen.test_agent` and `tests.test_java_gen.test_openrouter_client`; all pass.
+**Explicitly out of scope until a separate decision**
 
-### Phase 2: Deterministic compile → run_java → diff_json
+- **Non-FX** (rates, credit, equity, commodities as non-cash underliers) — only **hooks** and naming here.
+- **Exotic / structured FX** (e.g. correlation, variance swaps, complex multi-underlier structures) unless the matrix marks them P0/P1 and CDM mapping is agreed with a quant/CDM owner.
+- **FpML versions** older than those you officially support — handle via schema/corpus filters, not infinite backward compatibility in one pass.
 
-- [x] **2.1** In `agent.py`, after the `for tool_call in message.tool_calls` loop, add a check: last tool was `compile_java` and its result JSON has `"success": true`.
-- [x] **2.2** If true: call `run_java(class_name="CdmTradeBuilder", timeout=30)`; get `stdout` from result.
-- [x] **2.3** If run_java succeeded and stdout non-empty: call `diff_json(expected_json_path=cdm_json_path, actual_json=stdout)`. If run_java failed: optionally append only run_java result so the model sees the failure.
-- [x] **2.4** Build synthetic assistant message (two tool_calls: run_java, diff_json with synthetic ids e.g. `call_det_run`, `call_det_diff`) and two tool messages; append to `messages`.
-- [x] **2.5** Append two `tool_call` and two `tool_result` entries to `trace` (with `result_preview` first 500 chars); increment `total_tool_calls` by 2.
-- [x] **2.6** Handle edge case: only trigger when the **last** tool in the current message was compile_java success (not if compile_java was one of several and not last).
-- [x] **2.7** Add unit test: mock LLM returns one turn with compile_java success, next turn with finish; assert trace contains run_java and diff_json, result.success is True.
-- [x] **2.8** Run full agent and openrouter client tests; all pass.
-
-### Phase 3: Batching prompt and optional shorter tool descriptions
-
-- [x] **3.1** In `agent.py`, add or tighten the “Efficiency” section in `SYSTEM_PROMPT`: e.g. first 1–2 turns after inspect and get_java_template, call ALL lookup_cdm_schema and list_enum_values in parallel; do not call write_java_file until schema/enum info is gathered.
-- [x] **3.2** (Optional) In `tools.json`, shorten long `description` strings for tools; keep parameters and semantics unchanged. _(Skipped: left descriptions as-is to avoid any behavior change.)_
-- [x] **3.3** Run full agent and openrouter client tests; all pass.
+**Deliverable that locks scope:** `docs/fx_product_matrix.md` (or `data/fx_product_matrix.json`) — **no adapter work starts** for a product until it has a matrix row with priority and CDM target.
 
 ---
 
-# Plan: FpML FX-family → CDM v6 → ISDA CDM Java (Agentic)
+## 3. Current baseline (constraints to remove)
 
-## What we build
-An end-to-end pipeline that takes an FX-family FpML XML file and produces:
-1. A **CDM v6** intermediate JSON shaped like `{"trade": {...}}`.
-2. **Executable Java** source code (ISDA CDM builders) that reconstructs that best CDM instance.
-3. An **agentic mapping loop** that can iteratively improve mapping via *structured ruleset patches*, using tool calls with a tool registry.
+| Area | Today | Limitation |
+|------|--------|------------|
+| Detection | Two hard-coded product types + rulesets | Ignores other `<trade>` children |
+| Normalized | `NormalizedFxForward` — one shape | Cannot represent swaps/options without hacks |
+| Parser | Ruleset-driven extraction in `ruleset_engine` | One extractor shape (`extract_fx_product_fields`) |
+| Transformer | Mostly one FX spot/forward CDM pattern | Other products need different `economicTerms` / payouts |
+| Validator | Semantic checks tuned to forward-like output | Must branch per product family |
+| Mapping agent | Patches **rulesets only** | Cannot add new CDM subgraphs; new products need correct transformer first |
 
-The pipeline has three phases and is deterministic by default.
+---
 
-## Phase A — Deterministic parse/transform/validate (first pass)
-Given an FpML XML file:
-1. Detect which **supported FX adapter** exists under the `<trade>` subtree:
-   - `fxForward`
-   - `fxSingleLeg`
-2. Parse using a **ruleset-driven deterministic extractor** (no LLM):
-   - `fpml_cdm/rulesets.py` defines per-adapter candidate paths for normalized fields.
-   - `fpml_cdm/ruleset_engine.py` evaluates candidates in order and parses with existing helpers:
-     - `_normalize_date_only`
-     - `_parse_amount`
-     - `_parse_currency`
-3. Transform normalized output into CDM v6:
-   - `fpml_cdm/transformer.py::transform_to_cdm_v6`
-4. Validate:
-   - Normalized JSON schema:
-     - `fpml_cdm/validator.py::validate_schema_data("fpml_fx_forward_parsed.schema.json", ...)`
-   - CDM official Trade schema:
-     - `fpml_cdm/validator.py::validate_cdm_official_schema(trade_dict)`
-   - Semantic cross-check (field-by-field):
-     - `fpml_cdm/validator.py::_semantic_validation(normalized, cdm)`
-   - Rosetta type validator is optional/best-effort (not required for convergence in this version).
+## 4. Strategy overview — five pillars
 
-If validation passes, we do **not** run the mapping agent.
+### Pillar A — Inventory-driven scope (don’t guess)
 
-## Phase B — Agentic mapping loop (tool-constrained)
-If validation fails (or deterministic parsing produced insufficient data), we run an LLM loop that:
-1. Calls tools (no freeform CDM synthesis).
-2. Proposes **structured patches** to the mapping rulesets.
-3. Re-runs deterministic parse/transform/validate for each patch.
-4. Keeps the **best-so-far** CDM JSON even if validation doesn’t reach perfection.
+1. **Scan corpus** (`data/corpus/fpml_official/`, internal drops): list every **local name** of direct children of `<trade>` (excluding `tradeHeader`) that appear under `fx-derivatives` / FX paths.
+2. **Cross-check FpML XSD / documentation** for element names and expected children (optional script: extract element names from relevant schema fragments).
+3. **Build the product matrix** (Section 5): each row = one **adapter_id** (usually = FpML element local name), priority, example paths, CDM product qualifier / payout intent, notes.
+4. **Triage:** P0 = already needed by business; P1 = high frequency in corpus; P2 = rare; **Deferred** = exotics or CDM mapping unclear.
 
-### Tool registry requirement (central design)
-The mapping agent must use:
-- OpenAI-compatible `tools=[...]` specs
-- A dispatch registry `tool_name -> handler`
-- JSON-serializable tool outputs only
+### Pillar B — Adapter registry (single front door)
 
-Implementation (current code):
-`fpml_cdm/mapping_agent/registry.py`
-```python
-@dataclass(frozen=True)
-class ToolSpec:
-    name: str
-    description: str
-    json_schema: Dict[str, Any]
-    handler: Callable[..., Dict[str, Any]]
+Introduce a **registry** (data structure + optional `fpml_cdm/adapters/registry.py`) that maps:
 
-class ToolRegistry:
-    def __init__(self) -> None:
-        self._tools: Dict[str, ToolSpec] = {}
+- `adapter_id` (string, e.g. `fxSwap`, `fxSingleLegOption`)
+- **Parser profile:** ruleset key or reference to `get_base_ruleset(adapter_id)`
+- **Normalizer factory:** `FpML + issues → NormalizedFx*` (or union)
+- **Transformer key:** which function builds CDM
+- **Validator key:** which semantic validator runs
+- **Feature flags:** e.g. `requires_custom_extractor: bool`
 
-    def register(self, spec: ToolSpec) -> None:
-        self._tools[spec.name] = spec
+**Detection strategy**
 
-    def tool_definitions_for_llm(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.json_schema,
-                },
-            }
-            for t in self._tools.values()
-        ]
+1. List candidate product nodes under `<trade>` (namespace-agnostic local names).
+2. **Intersect** with registry keys; order by **priority** in registry (not XML order), so behavior is deterministic.
+3. If **multiple** candidates could apply (ambiguous XML), use **scoring**: e.g. prefer element that has required economic children present; tie-break by registry order.
+4. If **none** match → `UNSUPPORTED_PRODUCT` with path `trade/<localName>`.
 
-    def dispatch(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        return self._tools[name].handler(**args)
-```
+### Pillar C — Ruleset-first parsing, extractor second
 
-### Mapping tools (current tool contracts)
-Implementation: `fpml_cdm/mapping_agent/tools.py`
+- **Default:** each new FX product gets a **`_BASE_RULESETS[adapter_id]`** in [`fpml_cdm/rulesets.py`](fpml_cdm/rulesets.py): `fields` with ordered **candidate paths** (local-name paths), `derived` toggles, same patterns as today for dates/amounts/hrefs.
+- **Generalize** [`ruleset_engine.py`](fpml_cdm/ruleset_engine.py): either
+  - **Dispatch table:** `extract_product_fields(adapter_id, product_node, ruleset, issues)`, or
+  - **Small strategy classes** per adapter inheriting shared `_parse_date`, `_parse_amount`, NDF anchor logic, etc.
+- **Escape hatch:** when rulesets cannot express nesting (e.g. deeply optional legs), add **`adapter_id`-specific helper** in `ruleset_engine` or `parser.py` that fills a **typed dict** fragment, still called only from the adapter path (no global special cases in unrelated products).
 
-Tools exposed to the LLM:
-1. `inspect_fpml_trade(fpml_path: str) -> { tradeDate, product_candidates: [...] }`
-2. `get_active_ruleset_summary(adapter_id: str) -> { adapter_id, fields, derived }`
-3. `run_conversion_with_patch(fpml_path: str, adapter_id: str, patch: object) -> { cdm_json, normalized, validation_report, validation_summary, ... }`
-4. `validate_best_effort(fpml_path: str, cdm_json: object, enable_rosetta?: bool, rosetta_timeout_seconds?: int) -> ValidationReport + best-effort rosetta`
+### Pillar D — Normalized model strategy (discriminated union)
 
-### Structured patch schema (what the LLM is allowed to change)
-Deterministic patch application: `fpml_cdm/ruleset_engine.py::apply_ruleset_patch()`
+**Recommendation:** move from a single growing `NormalizedFxForward` to a **tagged union**:
 
-Supported patch shape:
-```json
-{
-  "fields": {
-    "<fieldName>": {
-      "candidates_order": ["<candidatePath>", "..."],
-      "candidates_add": ["<candidatePath>", "..."],
-      "required": true
-    }
-  },
-  "derived": {
-    "<derivedField>": {
-      "enabled": true
-    }
-  }
-}
-```
+- `NormalizedFxSpotForward` — current fields (rename or alias existing model).
+- `NormalizedFxSwap` — near leg / far leg dates, notionals per leg, etc.
+- `NormalizedFxOption` — strike, premium, exercise dates, put/call, barrier fields as needed.
 
-Compatibility:
-- `fields.<field>.candidates` is accepted as an alias for `candidates_order`.
-- `exchangeRate` derived can be enabled via the derived section (currently disabled by default to keep baseline deterministic behavior identical).
+Each type implements **`to_dict` / `from_dict`** and a stable **`source_product`** / `adapter_id` discriminator.  
+`ConversionResult.normalized` becomes `Optional[NormalizedFxTradeUnion]` (typing alias).
 
-### Agent loop scoring + stopping
-`fpml_cdm/mapping_agent/agent.py::run_mapping_agent()`
+**Migration:** keep `NormalizedFxForward` as **deprecated alias** or factory for spot-forward for one release; update CLI/tests gradually.
 
-Best-so-far selection metric:
-1. Primary: `schema_error_count`
-2. Secondary: `semantic_error_count`
+### Pillar E — Per-adapter transformer + Rosetta-canonical patterns
 
-Stopping:
-- Stop early if both counts are `0`
-- Stop if no improvement after `semantic_no_improve_limit` tool results
-- Hard limits:
-  - `max_iterations`
-  - `max_tool_calls`
-  - `timeout_seconds`
+- **Dispatch:** `transform_to_cdm_v6(model)` inspects type/discriminator → calls `transform_fx_spot_forward_like`, `transform_fx_swap`, `transform_fx_option`, …
+- **Shared building blocks:** party list, LEI/BIC resolution, `tradeIdentifier` duplication pattern, `tradeLot.priceQuantity` with **address/location** linking to `SettlementPayout.priceQuantity` schedules (already directionally in codebase).
+- **Per-product CDM table** (maintain in docs or code comments): adapter_id → list of payout kinds (`SettlementPayout`, `OptionPayout`, …), underlier placement, taxonomy qualifier convention.
 
-## Phase C — Java code generation (existing agent approach)
-Once we have the **best** CDM JSON:
-1. Write it to `output_dir/generated_expected_cdm.json` (temp artifact).
-2. Call the existing Java agent:
-   - `fpml_cdm/java_gen/agent.py::run_agent(cdm_json_path=..., llm_client=..., model=..., config=...)`
-3. The Java agent writes:
-   - `generated/CdmTradeBuilder.java`
-4. It also compiles, runs, and diffs emitted JSON vs expected, reporting:
-   - `success`
-   - `match_percentage`
-   - trace events (optional via `--trace-output`)
+---
 
-## CLI: `generate-java-from-fpml`
-Implemented in `fpml_cdm/cli.py` with command:
-```bash
-python -m fpml_cdm generate-java-from-fpml <fpml.xml> [options...]
-```
+## 5. Product matrix (deliverable template)
 
-### LLM provider/model flags
-- `--provider {openrouter,openai}` (default: `openrouter`)
-- `--model <name>` (default: `minimax/minimax-m2.5`) used for both mapping + Java codegen
-- `--mapping-model <name>` optional override for mapping agent
-- `--api-key` and `--base-url` for `--provider openai`
-- `OPENROUTER_API_KEY` must be set for `--provider openrouter`
+Create `docs/fx_product_matrix.md` with **minimum columns**:
 
-### Mapping controls
-- `--no-mapping-agent`: skip Phase B and use deterministic CDM even if validation fails
-- `--mapping-max-iterations` (default: 10)
-- `--mapping-max-tool-calls` (default: 80)
-- `--mapping-timeout` (default: 300)
+| Column | Description |
+|--------|-------------|
+| `adapter_id` | Stable id, usually FpML child local name |
+| `fpml_element` | Same as adapter_id or XSD name |
+| `priority` | P0 / P1 / P2 / Deferred |
+| `cdm_product_qualifier_target` | e.g. `ForeignExchange_Spot_Forward`, or option taxonomy |
+| `normalized_type` | e.g. `NormalizedFxSpotForward` |
+| `payout_summary` | Short text: settlement vs option vs multi-leg |
+| `example_fpml_paths` | 1+ corpus-relative paths |
+| `status` | Planned / In progress / Done |
+| `notes` | NDF, vendor quirks |
 
-### Java codegen controls
-- `--max-iterations` (default: 20)
-- `--max-tool-calls` (default: 50)
-- `--timeout` (default: 600)
+**Starter buckets** (illustrative — finalize against your corpus scan):
 
-### Output artifacts / contract
-Given `--output-dir <dir>` (default: `tmp`):
-1. Deterministic + agent best CDM:
-   - `<dir>/generated_expected_cdm.json`
-2. If mapping agent ran:
-   - `<dir>/mapping_trace.json` with:
-     - `mapping_result` summary
-     - `trace`
-     - `best_cdm_json_path`
-3. Java output (always from java agent):
-   - `generated/CdmTradeBuilder.java`
-4. Optional Java trace:
-   - `--trace-output <file>` writes:
-     - `{"trace": ..., "result": ...}` from the Java agent
+| Bucket | Typical FpML trade children | CDM complexity |
+|--------|------------------------------|----------------|
+| Spot / forward family | `fxSingleLeg`, `fxForward` | Lower — shared with current |
+| Swaps | `fxSwap`, possibly `fxFlexibleForward` | Higher — multiple dates/legs |
+| Options | `fxSingleLegOption`, barrier variants | Higher — option payout + underlier |
+| NDF / EM | Often under single-leg/forward | Medium — ruleset paths |
+| Exotics | Correlation, variance, … | Deferred unless P0 |
 
-### Exit codes
-- Returns `0` if Java agent `result.success == True`
-- Returns `1` otherwise
-- Returns `2` on LLM provider initialization errors (e.g. missing OPENROUTER_API_KEY)
+---
 
-## Codebase touch points (what to look at)
-- Deterministic rulesets:
-  - `fpml_cdm/rulesets.py`
-  - `fpml_cdm/ruleset_engine.py`
-- Deterministic parsing:
-  - `fpml_cdm/parser.py` (now ruleset-driven extraction)
-- Deterministic validation:
-  - `fpml_cdm/validator.py`
-- Agentic mapping:
-  - `fpml_cdm/mapping_agent/registry.py`
-  - `fpml_cdm/mapping_agent/tools.py`
-  - `fpml_cdm/mapping_agent/agent.py`
-- Java codegen integration orchestrator:
-  - `fpml_cdm/fpml_to_cdm_java.py`
-- CLI:
-  - `fpml_cdm/cli.py`
+## 6. Parser scaling — detailed steps
+
+### 6.1 Product detection (replace ad-hoc)
+
+- Implement **registry-driven** detection as in Pillar B.
+- **Logging (dev mode):** optional debug output listing all `<trade>` child local names when `UNSUPPORTED_PRODUCT` — speeds matrix updates.
+
+### 6.2 Rulesets
+
+- For each **P0/P1** matrix row, add `_BASE_RULESETS[adapter_id]`:
+  - Reuse field names where semantics align with spot-forward (`valueDate`, `exchangedCurrency*`, etc.).
+  - Add **new logical fields** only on the normalized type that needs them (e.g. `farValueDate` for swaps — reflected in ruleset + dataclass).
+
+### 6.3 `partyTradeIdentifier` / parties
+
+- Keep **one** party extraction pass at document level; per-adapter only changes **which hrefs** bind to normalized legs (buyer/seller, payer/receiver).
+
+### 6.4 Mapping agent
+
+- **`get_active_ruleset_summary`:** must list **all** field keys for the active adapter so the LLM can patch candidates.
+- Optional tool **`list_supported_adapters`** returning registry keys + one-line description.
+- **No change to rule:** agent still cannot patch transformer; only rulesets.
+
+---
+
+## 7. Transformer scaling — detailed steps
+
+### 7.1 CDM mapping table (per adapter)
+
+Maintain `docs/fx_cdm_mapping_table.md` or embedded dict:
+
+- **Input:** normalized union instance.
+- **Output:** which CDM nodes are populated (`product.economicTerms.payout[]` entries, `tradeLot`, etc.).
+- **Rosetta constraints:** address/location keys (`price-1`, `quantity-1`, `observable-1`, …) consistent across payout and tradeLot.
+
+### 7.2 Code layout (suggested)
+
+- `fpml_cdm/transformer.py` — thin **dispatch** + shared helpers (globalKey, party refs, identifiers).
+- `fpml_cdm/transformers/fx_spot_forward.py`, `fx_swap.py`, `fx_option.py` — **product-specific** `build_trade(...)`.
+
+### 7.3 Party / LEI / identifiers
+
+- **Single module** for: BIC → LEI (`data/lei/bic_to_lei.json`), `tradeIdentifier` with/without `issuerReference` + `issuer` object rows, `counterparty` / `partyRole` consistency rules.
+
+---
+
+## 8. Validation scaling
+
+| Layer | Strategy |
+|-------|----------|
+| JSON Schema | `validate_cdm_official_schema` per output; add **adapter-specific** optional stricter tests if needed |
+| Semantic | Register `_semantic_validation_*` by `adapter_id` or `isinstance`; **reuse** float tolerance patterns |
+| Rosetta | CI job per adapter golden file; **failure signature** catalog (rule name → owner) |
+
+---
+
+## 9. Testing and corpus gates
+
+1. **Unit:** per adapter — minimal XML → parse → normalize → transform → assert key CDM paths + semantic score.
+2. **Golden:** `tests/fixtures/expected/<adapter>_cdm.json` for stable cases.
+3. **Corpus:** extend Makefile target to output **JSON report**: `{ adapter_id: { ok: n, fail: n, errors: [...] } }`.
+4. **Regression:** optional CDM hash for pinned files on `main`.
+
+---
+
+## 10. Rollout phases (detailed)
+
+| Phase | Activities | Exit criteria |
+|-------|--------------|---------------|
+| **P0** | Build product matrix from corpus scan; add registry **stub** (keys only); ADR for normalized union; no new FpML products parsed yet | Matrix reviewed; registry API merged; CI green |
+| **P1** | Implement **first** non-trivial FX product end-to-end (e.g. `fxSwap` **or** `fxSingleLegOption` — pick in open decisions); union type + ruleset + transformer + tests | Green tests + ≥1 corpus example passes |
+| **P2** | Remaining P1/P2 matrix rows | Coverage % vs matrix; document gaps |
+| **P3** | Mapping agent + ruleset patches validated on messy XML | Trace shows useful patches; no transformer hacks |
+| **P4** | Non-FX: package layout (`fpml_cdm.models.fx`, …), namespace prefixes in registry, **no** full rates implementation unless scoped | ADR + empty stubs or interfaces |
+
+---
+
+## 11. Non-FX future (hooks only)
+
+- Registry keys like `rates:Swap`, `credit:CreditDefaultSwap` (prefix prevents collision with `fxSwap` if needed).
+- Separate normalized packages — **do not** put rates fields on FX union types.
+- Pipeline entry unchanged: **detect → adapter → parse → transform → validate**.
+
+---
+
+## 12. Risks and mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| God-object normalized model | Discriminated union + small focused dataclasses |
+| CDM/Rosetta drift | Golden files + Rosetta in CI |
+| Unbounded scope (“all FX”) | **Matrix + priority**; Deferred bucket |
+| Mapping agent misuse for CDM shape bugs | Document: fix transformer first; agent only for extraction |
+| Maintenance | CODEOWNERS or doc owner per adapter family |
+
+---
+
+## 13. Open decisions (resolve before coding)
+
+1. **P1 product:** `fxSwap` vs `fxSingleLegOption` first (quant + corpus frequency).
+2. **Breaking API:** timeline for removing `NormalizedFxForward` as sole type.
+3. **Compliance bar per product:** same schema+semantic+Rosetta for all adapters day-one, or **staged** (schema first, Rosetta later for new adapters).
+
+---
+
+## 14. File-level checklist (implementation)
+
+- [ ] `docs/fx_product_matrix.md` — inventory + priorities
+- [ ] `fpml_cdm/adapters/registry.py` (or equivalent) — adapter registry
+- [ ] `fpml_cdm/rulesets.py` — new `_BASE_RULESETS` entries
+- [ ] `fpml_cdm/ruleset_engine.py` — dispatch / extractors per adapter
+- [ ] `fpml_cdm/parser.py` — registry-driven detection
+- [ ] `fpml_cdm/types.py` — union normalized types + serialization
+- [ ] `fpml_cdm/transformer.py` + `fpml_cdm/transformers/fx_*.py` — dispatch + per-product CDM
+- [ ] `fpml_cdm/validator.py` — per-adapter semantic validation
+- [ ] `schemas/` — split or extend if normalized JSON schema becomes multi-type
+- [ ] `fpml_cdm/mapping_agent/*` — adapter list tool + field summaries for new adapters
+- [ ] `tests/fixtures/` — per-adapter minimal XML + expected JSON
+- [ ] `CLAUDE.md` / README — supported products table
+
+---
+
+## 15. Glossary
+
+- **Adapter:** one supported FpML product type under `<trade>` with full parse→CDM path.
+- **Ruleset:** declarative candidate paths + parsers for normalized fields.
+- **Matrix:** authoritative list of what “all FX” means for this codebase.
+
+---
+
+*End of scaling plan section.*

@@ -21,6 +21,32 @@ class TransformerTests(unittest.TestCase):
         expected = _load_json(FIXTURES / "expected" / "fx_forward_cdm.json")
         self.assertEqual(cdm, expected)
 
+    def test_transform_matches_expected_swap_shape(self) -> None:
+        model = parse_fpml_fx(str(FIXTURES / "fpml" / "fx_swap.xml"))
+        cdm = transform_to_cdm_v6(model)
+        expected = _load_json(FIXTURES / "expected" / "fx_swap_cdm.json")
+        self.assertEqual(cdm, expected)
+
+    def test_swap_leg_payer_receiver_uses_leg_specific_currency2_refs(self) -> None:
+        model = parse_fpml_fx(
+            str(
+                FIXTURES.parent.parent
+                / "data"
+                / "corpus"
+                / "fpml_official"
+                / "fpml_4_9_5"
+                / "xml"
+                / "fx-derivatives"
+                / "fx-ex08-fx-swap.xml"
+            )
+        )
+        cdm = transform_to_cdm_v6(model)
+        payouts = cdm["trade"]["product"]["economicTerms"]["payout"]
+        near_pr = payouts[0]["SettlementPayout"]["payerReceiver"]
+        far_pr = payouts[1]["SettlementPayout"]["payerReceiver"]
+        self.assertEqual((near_pr["payer"], near_pr["receiver"]), ("Party1", "Party2"))
+        self.assertEqual((far_pr["payer"], far_pr["receiver"]), ("Party2", "Party1"))
+
     def test_transform_ndf_includes_settlement_currency(self) -> None:
         model = parse_fpml_fx(str(FIXTURES / "fpml" / "ndf_forward.xml"))
         cdm = transform_to_cdm_v6(model)

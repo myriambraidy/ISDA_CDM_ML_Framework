@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fpml_cdm import convert_fpml_to_cdm
+from fpml_cdm.adapters.registry import SUPPORTED_FX_ADAPTER_IDS, fpml_trade_product_local_names
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +69,8 @@ def build_report(corpus: Path, files: List[Path], sample_errors: int) -> Dict:
     error_code_counts = Counter()
     ok_by_source = Counter()
     failed_by_source = Counter()
+    ok_by_adapter_id = Counter()
+    failed_by_trade_child = Counter()
     mapping_scores: List[float] = []
     failed_samples = []
 
@@ -79,12 +82,23 @@ def build_report(corpus: Path, files: List[Path], sample_errors: int) -> Dict:
         if result.ok:
             status_counts["ok"] += 1
             ok_by_source[source_key] += 1
+            if result.normalized is not None and getattr(result.normalized, "sourceProduct", None):
+                ok_by_adapter_id[str(result.normalized.sourceProduct)] += 1
             if result.validation is not None:
                 mapping_scores.append(result.validation.mapping_score.accuracy_percent)
             continue
 
         status_counts["failed"] += 1
         failed_by_source[source_key] += 1
+        tags = fpml_trade_product_local_names(str(file_path))
+        registered_hits = [t for t in tags if t in SUPPORTED_FX_ADAPTER_IDS]
+        if registered_hits:
+            failed_bucket = registered_hits[0]
+        elif tags:
+            failed_bucket = tags[0]
+        else:
+            failed_bucket = "_no_trade_product"
+        failed_by_trade_child[failed_bucket] += 1
         code = result.errors[0].code if result.errors else "UNKNOWN"
         message = result.errors[0].message if result.errors else "Unknown failure"
         error_code_counts[code] += 1
@@ -112,6 +126,8 @@ def build_report(corpus: Path, files: List[Path], sample_errors: int) -> Dict:
         "error_code_counts": dict(error_code_counts),
         "ok_by_source": dict(ok_by_source),
         "failed_by_source": dict(failed_by_source),
+        "ok_by_adapter_id": dict(ok_by_adapter_id),
+        "failed_by_trade_child": dict(failed_by_trade_child),
         "mapping_score": {
             "average_accuracy_percent": avg_score,
             "ok_file_count_with_score": len(mapping_scores),

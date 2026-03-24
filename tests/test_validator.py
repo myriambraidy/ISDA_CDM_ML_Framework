@@ -19,6 +19,13 @@ class ValidatorTests(unittest.TestCase):
         self.assertGreater(report.mapping_score.total_fields, 0)
         self.assertEqual(report.mapping_score.accuracy_percent, 100.0)
 
+    def test_validate_transformation_success_path_fx_swap(self) -> None:
+        fpml_path = FIXTURES / "fpml" / "fx_swap.xml"
+        model = parse_fpml_fx(str(fpml_path))
+        cdm = transform_to_cdm_v6(model)
+        report = validate_transformation(str(fpml_path), cdm)
+        self.assertTrue(report.valid)
+
     def test_validate_detects_semantic_mismatch(self) -> None:
         fpml_path = FIXTURES / "fpml" / "fx_forward.xml"
         model = parse_fpml_fx(str(fpml_path))

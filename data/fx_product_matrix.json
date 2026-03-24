@@ -1,0 +1,37 @@
+[
+  {
+    "adapter_id": "fxForward",
+    "priority": "P0",
+    "normalized_kind": "fx_spot_forward_like",
+    "cdm_product_qualifier_target": "ForeignExchange_Spot_Forward",
+    "status": "done",
+    "example_paths": ["tests/fixtures/fpml/fx_forward.xml"]
+  },
+  {
+    "adapter_id": "fxSingleLeg",
+    "priority": "P0",
+    "normalized_kind": "fx_spot_forward_like",
+    "cdm_product_qualifier_target": "ForeignExchange_Spot_Forward",
+    "status": "done",
+    "example_paths": ["tests/fixtures/fpml/fx_single_leg.xml"]
+  },
+  {
+    "adapter_id": "fxSwap",
+    "priority": "P1",
+    "normalized_kind": "fx_swap",
+    "cdm_product_qualifier_target": "ForeignExchange_Swap",
+    "status": "done",
+    "example_paths": [
+      "tests/fixtures/fpml/fx_swap.xml",
+      "tests/fixtures/fpml/fx_swap_alt_dates.xml"
+    ]
+  },
+  {
+    "adapter_id": "fxSingleLegOption",
+    "priority": "P1",
+    "normalized_kind": "fx_option",
+    "cdm_product_qualifier_target": "TBD",
+    "status": "planned",
+    "example_paths": []
+  }
+]

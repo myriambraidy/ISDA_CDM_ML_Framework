@@ -4,7 +4,7 @@
       "taxonomy": [
         {
           "source": "ISDA",
-          "productQualifier": "ForeignExchange_Spot_Forward"
+          "productQualifier": "ForeignExchange_Swap"
         }
       ],
       "economicTerms": {
@@ -37,13 +37,13 @@
               "settlementTerms": {
                 "settlementType": "Physical",
                 "settlementDate": {
-                  "valueDate": "2024-09-01",
+                  "valueDate": "2024-06-03",
                   "meta": {
-                    "globalKey": "751a2f13"
+                    "globalKey": "87c849a8"
                   }
                 },
                 "meta": {
-                  "globalKey": "1715708f"
+                  "globalKey": "e6dcb124"
                 }
               },
               "underlier": {
@@ -56,13 +56,63 @@
               }
             },
             "meta": {
-              "globalKey": "9637e98b"
+              "globalKey": "27cecd9"
+            }
+          },
+          {
+            "SettlementPayout": {
+              "payerReceiver": {
+                "payer": "Party2",
+                "receiver": "Party1"
+              },
+              "priceQuantity": {
+                "quantitySchedule": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "quantity-3"
+                  }
+                },
+                "priceSchedule": [
+                  {
+                    "address": {
+                      "scope": "DOCUMENT",
+                      "value": "price-2"
+                    }
+                  }
+                ],
+                "meta": {
+                  "globalKey": "54bfc133"
+                }
+              },
+              "settlementTerms": {
+                "settlementType": "Physical",
+                "settlementDate": {
+                  "valueDate": "2024-09-03",
+                  "meta": {
+                    "globalKey": "769efb7d"
+                  }
+                },
+                "meta": {
+                  "globalKey": "2fd07d9a"
+                }
+              },
+              "underlier": {
+                "Observable": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "observable-2"
+                  }
+                }
+              }
+            },
+            "meta": {
+              "globalKey": "8e418c20"
             }
           }
         ]
       },
       "meta": {
-        "globalKey": "a58a8037"
+        "globalKey": "9d0fdfe"
       }
     },
     "tradeLot": [
@@ -75,12 +125,12 @@
                   "value": 1.09,
                   "unit": {
                     "currency": {
-                      "value": "EUR"
+                      "value": "USD"
                     }
                   },
                   "perUnitOf": {
                     "currency": {
-                      "value": "USD"
+                      "value": "EUR"
                     }
                   },
                   "priceType": "ExchangeRate"
@@ -98,10 +148,10 @@
             "quantity": [
               {
                 "value": {
-                  "value": 10000000.0,
+                  "value": 5000000.0,
                   "unit": {
                     "currency": {
-                      "value": "USD"
+                      "value": "EUR"
                     }
                   }
                 },
@@ -116,10 +166,10 @@
               },
               {
                 "value": {
-                  "value": 9174311.93,
+                  "value": 5450000.0,
                   "unit": {
                     "currency": {
-                      "value": "EUR"
+                      "value": "USD"
                     }
                   }
                 },
@@ -140,7 +190,7 @@
                     "identifier": [
                       {
                         "identifier": {
-                          "value": "USD"
+                          "value": "EUR"
                         },
                         "identifierType": "CurrencyCode"
                       }
@@ -158,7 +208,100 @@
               }
             },
             "meta": {
-              "globalKey": "6fe9296d"
+              "globalKey": "9c6ecc86"
+            }
+          },
+          {
+            "price": [
+              {
+                "value": {
+                  "value": 1.1,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  },
+                  "perUnitOf": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  },
+                  "priceType": "ExchangeRate"
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "price-2"
+                    }
+                  ]
+                }
+              }
+            ],
+            "quantity": [
+              {
+                "value": {
+                  "value": 5000000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-3"
+                    }
+                  ]
+                }
+              },
+              {
+                "value": {
+                  "value": 5500000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-3-2"
+                    }
+                  ]
+                }
+              }
+            ],
+            "observable": {
+              "value": {
+                "Asset": {
+                  "Cash": {
+                    "identifier": [
+                      {
+                        "identifier": {
+                          "value": "EUR"
+                        },
+                        "identifierType": "CurrencyCode"
+                      }
+                    ]
+                  }
+                }
+              },
+              "meta": {
+                "location": [
+                  {
+                    "scope": "DOCUMENT",
+                    "value": "observable-2"
+                  }
+                ]
+              }
+            },
+            "meta": {
+              "globalKey": "fdede36f"
             }
           }
         ]
@@ -175,7 +318,7 @@
       {
         "role": "Party2",
         "partyReference": {
-          "globalReference": "e6b0192",
+          "globalReference": "7df49501",
           "externalReference": "party2"
         }
       }
@@ -189,12 +332,15 @@
         "assignedIdentifier": [
           {
             "identifier": {
-              "value": "FX2024060100123"
+              "value": "FXSWAP-001",
+              "meta": {
+                "scheme": "http://example.com/trade-id"
+              }
             }
           }
         ],
         "meta": {
-          "globalKey": "67c1b9b5"
+          "globalKey": "317133f0"
         }
       },
       {
@@ -204,12 +350,15 @@
         "assignedIdentifier": [
           {
             "identifier": {
-              "value": "FX2024060100123"
+              "value": "FXSWAP-001",
+              "meta": {
+                "scheme": "http://example.com/trade-id"
+              }
             }
           }
         ],
         "meta": {
-          "globalKey": "179d350"
+          "globalKey": "abe51bdc"
         }
       }
     ],
@@ -245,11 +394,11 @@
           }
         ],
         "name": {
-          "value": "International Bank B"
+          "value": "Global Bank B"
         },
         "meta": {
           "externalKey": "party2",
-          "globalKey": "e6b0192"
+          "globalKey": "7df49501"
         }
       }
     ],
@@ -263,12 +412,12 @@
       {
         "role": "Seller",
         "partyReference": {
-          "globalReference": "e6b0192"
+          "globalReference": "7df49501"
         }
       }
     ],
     "meta": {
-      "globalKey": "7d2e53fe"
+      "globalKey": "7c405afb"
     }
   }
 }

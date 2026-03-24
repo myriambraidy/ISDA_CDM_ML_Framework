@@ -5,7 +5,16 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .types import ErrorCode, NormalizedFxForward, ParserError, ValidationIssue
+from .adapters.registry import get_fx_adapter_spec
+from .types import (
+    NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE,
+    NORMALIZED_KIND_FX_SWAP,
+    ErrorCode,
+    NormalizedFxForward,
+    NormalizedFxSwap,
+    ParserError,
+    ValidationIssue,
+)
 from .xml_utils import (
     _find_child_local,
     _find_descendant_local,
@@ -103,11 +112,29 @@ def _resolve_value_path(root: ET.Element, local_path: str) -> Optional[str]:
         attr_name = segments[-1][1:]
         segments = segments[:-1]
 
+    def _parse_segment(seg: str) -> Tuple[str, Optional[int]]:
+        if seg.endswith("]") and "[" in seg:
+            base, idx_s = seg[:-1].split("[", 1)
+            if idx_s.isdigit():
+                return base, int(idx_s)
+        return seg, None
+
+    def _find_child_local_nth(node: Optional[ET.Element], local_name: str, idx: Optional[int]) -> Optional[ET.Element]:
+        if node is None:
+            return None
+        if idx is None:
+            return _find_child_local(node, local_name)
+        if idx < 0:
+            return None
+        matches = [child for child in list(node) if _local_name(child.tag) == local_name]
+        return matches[idx] if idx < len(matches) else None
+
     cur: Optional[ET.Element] = root
     for seg in segments:
         if cur is None:
             return None
-        cur = _find_child_local(cur, seg)
+        name, idx = _parse_segment(seg)
+        cur = _find_child_local_nth(cur, name, idx)
 
     if cur is None:
         return None
@@ -194,6 +221,18 @@ def _parse_field_value(
             )
             return None
         return val
+    if parser == "settlement_type_enum":
+        raw_up = raw.strip().upper()
+        if raw_up in {"CASH", "PHYSICAL", "REGULAR"}:
+            return raw_up
+        issues.append(
+            ValidationIssue(
+                code=ErrorCode.INVALID_VALUE.value,
+                message=f"Invalid settlement type at {issue_path}: {raw}",
+                path=issue_path,
+            )
+        )
+        return None
     raise ValueError(f"Unknown parser type in ruleset: {parser}")
 
 
@@ -203,46 +242,70 @@ def extract_fx_product_fields(
     ruleset: Dict[str, Any],
     issues: List[ValidationIssue],
 ) -> Dict[str, Any]:
-    if product_node is None:
-        return {
-            "valueDate": None,
-            "currency1": None,
-            "amount1": None,
-            "currency2": None,
-            "amount2": None,
-            "exchangeRate": None,
-            "settlementType": "PHYSICAL",
-            "settlementCurrency": None,
-            "buyerPartyReference": None,
-            "sellerPartyReference": None,
-            "currency2PayerPartyReference": None,
-            "currency2ReceiverPartyReference": None,
-        }
-
     out: Dict[str, Any] = {}
     fields = ruleset.get("fields", {})
-
-    # 1) settlementType needs presence semantics and feeds settlementCurrency.
-    if "settlementType" in fields and fields["settlementType"].get("parser") == "settlement_type_from_ndf_presence":
-        st_def = fields["settlementType"]
-        ndf_candidates = st_def.get("ndf_candidates") or []
-        cash_value = st_def.get("cash_value", "CASH")
-        physical_value = st_def.get("physical_value", "PHYSICAL")
-
-        found_ndf = False
-        for cand in ndf_candidates:
-            # Keep NDF detection robust: consider descendant presence.
-            if _find_descendant_local(product_node, str(cand)) is not None:
-                found_ndf = True
-                break
-        out["settlementType"] = cash_value if found_ndf else physical_value
-    else:
+    if product_node is None:
         out["settlementType"] = "PHYSICAL"
+        for field_name, field_def in fields.items():
+            if field_name == "settlementType":
+                continue
+            out[field_name] = None
+            if not bool(field_def.get("required", False)):
+                continue
+            parser = field_def.get("parser")
+            candidates: List[str] = list(field_def.get("candidates") or [])
+            fallback_path = candidates[0] if candidates else field_name
+            issue_path = f"trade/{adapter_id}/{field_name}/{fallback_path}"
+            if parser == "date_only":
+                _parse_date(None, issue_path, issues)
+            elif parser == "amount":
+                _parse_amount(None, issue_path, issues)
+            elif parser == "currency3":
+                _parse_currency(None, issue_path, issues)
+            elif parser == "href":
+                issues.append(
+                    ValidationIssue(
+                        code=ErrorCode.MISSING_REQUIRED_FIELD.value,
+                        message=f"Missing required href at {field_name}",
+                        path=issue_path,
+                    )
+                )
+        return out
 
-    # 2) regular scalar fields by candidate evaluation.
+    # 1) scalar fields by candidate evaluation (including settlement types).
     for field_name, field_def in fields.items():
-        if field_name == "settlementType":
+        parser = field_def.get("parser")
+        if parser == "settlement_type_from_ndf_presence":
+            candidates: List[str] = list(field_def.get("candidates") or [])
+            ndf_candidates = field_def.get("ndf_candidates") or []
+            cash_value = field_def.get("cash_value", "CASH")
+            physical_value = field_def.get("physical_value", "PHYSICAL")
+            parsed_st: Optional[str] = None
+            for cand in candidates:
+                raw = _resolve_value_path_with_ndf_descendant_anchor(product_node, str(cand))
+                if raw is None:
+                    continue
+                tmp_issues: List[ValidationIssue] = []
+                val = _parse_field_value(
+                    parser="settlement_type_enum",
+                    raw=raw,
+                    issue_path=f"trade/{adapter_id}/{field_name}/{cand}",
+                    issues=tmp_issues,
+                )
+                if val is not None:
+                    parsed_st = val
+                    break
+                issues.extend(tmp_issues)
+            if parsed_st is None:
+                found_ndf = False
+                for cand in ndf_candidates:
+                    if _find_descendant_local(product_node, str(cand)) is not None:
+                        found_ndf = True
+                        break
+                parsed_st = cash_value if found_ndf else physical_value
+            out[field_name] = parsed_st
             continue
+
         parser = field_def.get("parser")
         required = bool(field_def.get("required", False))
         candidates: List[str] = list(field_def.get("candidates") or [])
@@ -303,6 +366,10 @@ def extract_fx_product_fields(
     return out
 
 
+# Alias for adapter-agnostic call sites (plan: dispatch by adapter_id).
+extract_product_fields = extract_fx_product_fields
+
+
 def parse_fpml_fx_with_ruleset(
     *,
     fpml_path: str,
@@ -310,11 +377,14 @@ def parse_fpml_fx_with_ruleset(
     ruleset: Dict[str, Any],
     strict: bool = True,
     recovery_mode: bool = False,
-) -> Tuple[NormalizedFxForward, List[ValidationIssue]] | NormalizedFxForward:
+) -> Tuple[NormalizedFxForward | NormalizedFxSwap, List[ValidationIssue]] | NormalizedFxForward | NormalizedFxSwap:
     """
     Parse an FpML file using a provided adapter ruleset to extract
     the FX product economic fields deterministically.
     """
+    _aspec = get_fx_adapter_spec(adapter_id)
+    _nk = _aspec.normalized_kind if _aspec else NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE
+
     xml_file = Path(fpml_path)
     if not xml_file.exists():
         issues = [
@@ -326,7 +396,28 @@ def parse_fpml_fx_with_ruleset(
         ]
         if strict and not recovery_mode:
             raise ParserError(issues)
-        model = NormalizedFxForward(
+        if _nk == NORMALIZED_KIND_FX_SWAP:
+            model = NormalizedFxSwap(
+                tradeDate="",
+                nearValueDate="",
+                farValueDate="",
+                nearCurrency1="",
+                nearCurrency2="",
+                nearAmount1=0.0,
+                nearAmount2=0.0,
+                farCurrency1="",
+                farCurrency2="",
+                farAmount1=0.0,
+                farAmount2=0.0,
+                tradeIdentifiers=[],
+                parties=[],
+                sourceProduct=adapter_id,
+                normalized_kind=_nk,
+                sourceNamespace=None,
+                sourceVersion=None,
+            )
+        else:
+            model = NormalizedFxForward(
             tradeDate="",
             valueDate="",
             currency1="",
@@ -341,9 +432,10 @@ def parse_fpml_fx_with_ruleset(
             buyerPartyReference=None,
             sellerPartyReference=None,
             sourceProduct=adapter_id,
+            normalized_kind=_nk,
             sourceNamespace=None,
-            sourceVersion=None,
-        )
+                sourceVersion=None,
+            )
         return (model, issues) if recovery_mode else model
 
     try:
@@ -358,7 +450,28 @@ def parse_fpml_fx_with_ruleset(
         ]
         if strict and not recovery_mode:
             raise ParserError(issues)
-        model = NormalizedFxForward(
+        if _nk == NORMALIZED_KIND_FX_SWAP:
+            model = NormalizedFxSwap(
+                tradeDate="",
+                nearValueDate="",
+                farValueDate="",
+                nearCurrency1="",
+                nearCurrency2="",
+                nearAmount1=0.0,
+                nearAmount2=0.0,
+                farCurrency1="",
+                farCurrency2="",
+                farAmount1=0.0,
+                farAmount2=0.0,
+                tradeIdentifiers=[],
+                parties=[],
+                sourceProduct=adapter_id,
+                normalized_kind=_nk,
+                sourceNamespace=None,
+                sourceVersion=None,
+            )
+        else:
+            model = NormalizedFxForward(
             tradeDate="",
             valueDate="",
             currency1="",
@@ -373,9 +486,10 @@ def parse_fpml_fx_with_ruleset(
             buyerPartyReference=None,
             sellerPartyReference=None,
             sourceProduct=adapter_id,
+            normalized_kind=_nk,
             sourceNamespace=None,
-            sourceVersion=None,
-        )
+                sourceVersion=None,
+            )
         return (model, issues) if recovery_mode else model
 
     issues: List[ValidationIssue] = []
@@ -391,7 +505,28 @@ def parse_fpml_fx_with_ruleset(
                 path="trade",
             )
         )
-        model = NormalizedFxForward(
+        if _nk == NORMALIZED_KIND_FX_SWAP:
+            model = NormalizedFxSwap(
+                tradeDate="",
+                nearValueDate="",
+                farValueDate="",
+                nearCurrency1="",
+                nearCurrency2="",
+                nearAmount1=0.0,
+                nearAmount2=0.0,
+                farCurrency1="",
+                farCurrency2="",
+                farAmount1=0.0,
+                farAmount2=0.0,
+                tradeIdentifiers=[],
+                parties=[],
+                sourceProduct=adapter_id,
+                normalized_kind=_nk,
+                sourceNamespace=None,
+                sourceVersion=source_version,
+            )
+        else:
+            model = NormalizedFxForward(
             tradeDate="",
             valueDate="",
             currency1="",
@@ -406,9 +541,10 @@ def parse_fpml_fx_with_ruleset(
             buyerPartyReference=None,
             sellerPartyReference=None,
             sourceProduct=adapter_id,
+            normalized_kind=_nk,
             sourceNamespace=None,
-            sourceVersion=source_version,
-        )
+                sourceVersion=source_version,
+            )
         if strict and not recovery_mode and issues:
             raise ParserError(issues)
         return (model, issues) if recovery_mode else model
@@ -476,27 +612,53 @@ def parse_fpml_fx_with_ruleset(
             if isinstance(a1, (int, float)) and isinstance(a2, (int, float)) and a1 != 0:
                 product_fields["exchangeRate"] = a2 / a1
 
-    settlement_type = product_fields.get("settlementType", "PHYSICAL") or "PHYSICAL"
-    model = NormalizedFxForward(
-        tradeDate=trade_date or "",
-        valueDate=product_fields.get("valueDate") or "",
-        currency1=product_fields.get("currency1") or "",
-        currency2=product_fields.get("currency2") or "",
-        amount1=float(product_fields.get("amount1") or 0.0),
-        amount2=float(product_fields.get("amount2") or 0.0),
-        tradeIdentifiers=trade_identifiers,
-        parties=parties,
-        exchangeRate=product_fields.get("exchangeRate"),
-        settlementType=settlement_type,
-        settlementCurrency=product_fields.get("settlementCurrency"),
-        buyerPartyReference=product_fields.get("buyerPartyReference"),
-        sellerPartyReference=product_fields.get("sellerPartyReference"),
-        currency2PayerPartyReference=product_fields.get("currency2PayerPartyReference"),
-        currency2ReceiverPartyReference=product_fields.get("currency2ReceiverPartyReference"),
-        sourceProduct=adapter_id,
-        sourceNamespace=source_namespace,
-        sourceVersion=source_version,
-    )
+    if _nk == NORMALIZED_KIND_FX_SWAP:
+        model = NormalizedFxSwap(
+            tradeDate=trade_date or "",
+            nearValueDate=product_fields.get("nearValueDate") or "",
+            farValueDate=product_fields.get("farValueDate") or "",
+            nearCurrency1=product_fields.get("nearCurrency1") or "",
+            nearCurrency2=product_fields.get("nearCurrency2") or "",
+            nearAmount1=float(product_fields.get("nearAmount1") or 0.0),
+            nearAmount2=float(product_fields.get("nearAmount2") or 0.0),
+            farCurrency1=product_fields.get("farCurrency1") or "",
+            farCurrency2=product_fields.get("farCurrency2") or "",
+            farAmount1=float(product_fields.get("farAmount1") or 0.0),
+            farAmount2=float(product_fields.get("farAmount2") or 0.0),
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            nearExchangeRate=product_fields.get("nearExchangeRate"),
+            farExchangeRate=product_fields.get("farExchangeRate"),
+            buyerPartyReference=product_fields.get("buyerPartyReference"),
+            sellerPartyReference=product_fields.get("sellerPartyReference"),
+            sourceProduct=adapter_id,
+            normalized_kind=_nk,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    else:
+        settlement_type = product_fields.get("settlementType", "PHYSICAL") or "PHYSICAL"
+        model = NormalizedFxForward(
+            tradeDate=trade_date or "",
+            valueDate=product_fields.get("valueDate") or "",
+            currency1=product_fields.get("currency1") or "",
+            currency2=product_fields.get("currency2") or "",
+            amount1=float(product_fields.get("amount1") or 0.0),
+            amount2=float(product_fields.get("amount2") or 0.0),
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            exchangeRate=product_fields.get("exchangeRate"),
+            settlementType=settlement_type,
+            settlementCurrency=product_fields.get("settlementCurrency"),
+            buyerPartyReference=product_fields.get("buyerPartyReference"),
+            sellerPartyReference=product_fields.get("sellerPartyReference"),
+            currency2PayerPartyReference=product_fields.get("currency2PayerPartyReference"),
+            currency2ReceiverPartyReference=product_fields.get("currency2ReceiverPartyReference"),
+            sourceProduct=adapter_id,
+            normalized_kind=_nk,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
 
     if not recovery_mode:
         if strict and issues:

@@ -7,9 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from .cdm_official_schema import get_trade_schema_validator
 from .parser import parse_fpml_fx
 from .types import (
+    NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE,
+    NORMALIZED_KIND_FX_SWAP,
     ErrorCode,
     MappingScore,
     NormalizedFxForward,
+    NormalizedFxSwap,
+    NormalizedFxTrade,
     ParserError,
     ValidationIssue,
     ValidationReport,
@@ -56,6 +60,31 @@ def validate_schema_data(schema_name: str, data: Dict[str, Any]) -> List[Validat
 def validate_schema_file(schema_name: str, json_path: str) -> List[ValidationIssue]:
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    return validate_schema_data(schema_name, data)
+
+
+def normalized_parsed_schema_for_kind(normalized_kind: str) -> str:
+    """JSON Schema filename under ``schemas/`` for a normalized trade discriminator."""
+    if normalized_kind == NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE:
+        return "fpml_fx_forward_parsed.schema.json"
+    if normalized_kind == NORMALIZED_KIND_FX_SWAP:
+        return "fpml_fx_swap_parsed.schema.json"
+    raise KeyError(normalized_kind)
+
+
+def validate_normalized_parsed_dict(data: Dict[str, Any]) -> List[ValidationIssue]:
+    """Validate parsed normalized JSON using the schema for ``normalizedKind``."""
+    kind = data.get("normalizedKind", NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE)
+    try:
+        schema_name = normalized_parsed_schema_for_kind(str(kind))
+    except KeyError:
+        return [
+            ValidationIssue(
+                code=ErrorCode.SCHEMA_VALIDATION_FAILED.value,
+                message=f"No JSON Schema registered for normalizedKind={kind!r}",
+                path="normalizedKind",
+            )
+        ]
     return validate_schema_data(schema_name, data)
 
 
@@ -239,12 +268,161 @@ def _semantic_validation_fx_forward_like(
     return issues, mapping_score
 
 
-def _semantic_validation(model: NormalizedFxForward, cdm_data: Dict[str, Any]) -> Tuple[List[ValidationIssue], MappingScore]:
-    adapter_id = (model.sourceProduct or "").strip()
-    if adapter_id in {"fxForward", "fxSingleLeg"}:
+def _semantic_validation(model: NormalizedFxTrade, cdm_data: Dict[str, Any]) -> Tuple[List[ValidationIssue], MappingScore]:
+    kind = getattr(model, "normalized_kind", NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE)
+    if kind == NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE:
+        if not isinstance(model, NormalizedFxForward):
+            return (
+                [
+                    ValidationIssue(
+                        code=ErrorCode.SEMANTIC_VALIDATION_FAILED.value,
+                        message=f"Expected NormalizedFxForward for {kind!r}, got {type(model).__name__}",
+                        path="normalized",
+                    )
+                ],
+                MappingScore(),
+            )
         return _semantic_validation_fx_forward_like(model, cdm_data)
-    # Conservative fallback while new adapters are onboarded.
-    return _semantic_validation_fx_forward_like(model, cdm_data)
+    if kind == NORMALIZED_KIND_FX_SWAP:
+        if not isinstance(model, NormalizedFxSwap):
+            return (
+                [
+                    ValidationIssue(
+                        code=ErrorCode.SEMANTIC_VALIDATION_FAILED.value,
+                        message=f"Expected NormalizedFxSwap for {kind!r}, got {type(model).__name__}",
+                        path="normalized",
+                    )
+                ],
+                MappingScore(),
+            )
+        return _semantic_validation_fx_swap(model, cdm_data)
+    return (
+        [
+            ValidationIssue(
+                code=ErrorCode.SEMANTIC_VALIDATION_FAILED.value,
+                message=f"No semantic validator for normalized_kind={kind!r}",
+                path="normalized_kind",
+            )
+        ],
+        MappingScore(),
+    )
+
+
+def _semantic_validation_fx_swap(
+    model: NormalizedFxSwap, cdm_data: Dict[str, Any]
+) -> Tuple[List[ValidationIssue], MappingScore]:
+    issues: List[ValidationIssue] = []
+    checks_total = 0
+    checks_matched = 0
+
+    def check(condition: bool, message: str, path: str) -> None:
+        nonlocal checks_total, checks_matched
+        checks_total += 1
+        if condition:
+            checks_matched += 1
+            return
+        issues.append(
+            ValidationIssue(
+                code=ErrorCode.SEMANTIC_VALIDATION_FAILED.value,
+                message=message,
+                path=path,
+            )
+        )
+
+    trade = cdm_data.get("trade", {})
+    check(trade.get("tradeDate", {}).get("value") == model.tradeDate, "Trade date mismatch", "trade.tradeDate.value")
+
+    payouts = trade.get("product", {}).get("economicTerms", {}).get("payout", []) or []
+    check(len(payouts) >= 2, "FX swap must emit at least two payouts", "trade.product.economicTerms.payout")
+    if len(payouts) >= 2:
+        near = payouts[0].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementDate", {}).get("valueDate")
+        far = payouts[1].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementDate", {}).get("valueDate")
+        check(near == model.nearValueDate, "Near value date mismatch", "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementDate.valueDate")
+        check(far == model.farValueDate, "Far value date mismatch", "trade.product.economicTerms.payout[1].SettlementPayout.settlementTerms.settlementDate.valueDate")
+        near_st = payouts[0].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementType")
+        far_st = payouts[1].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementType")
+        expected_near_st = {"PHYSICAL": "Physical", "CASH": "Cash", "REGULAR": "Physical"}.get(model.nearSettlementType, "Physical")
+        expected_far_st = {"PHYSICAL": "Physical", "CASH": "Cash", "REGULAR": "Physical"}.get(model.farSettlementType, "Physical")
+        check(
+            near_st == expected_near_st,
+            f"Near settlement type mismatch: expected={expected_near_st}, got={near_st}",
+            "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementType",
+        )
+        check(
+            far_st == expected_far_st,
+            f"Far settlement type mismatch: expected={expected_far_st}, got={far_st}",
+            "trade.product.economicTerms.payout[1].SettlementPayout.settlementTerms.settlementType",
+        )
+        counterparties: Dict[str, str] = {}
+        for cp in trade.get("counterparty", []):
+            ref = cp.get("partyReference", {})
+            key = ref.get("externalReference") or ref.get("globalReference")
+            if key:
+                counterparties[key] = cp.get("role", "")
+        near_pr = payouts[0].get("SettlementPayout", {}).get("payerReceiver", {})
+        far_pr = payouts[1].get("SettlementPayout", {}).get("payerReceiver", {})
+        if model.nearCurrency2PayerPartyReference:
+            near_expected_payer = counterparties.get(model.nearCurrency2PayerPartyReference, "Party1")
+            check(
+                near_pr.get("payer") == near_expected_payer,
+                f"Near payer mismatch: expected={near_expected_payer}, got={near_pr.get('payer')}",
+                "trade.product.economicTerms.payout[0].SettlementPayout.payerReceiver.payer",
+            )
+        if model.nearCurrency2ReceiverPartyReference:
+            near_expected_receiver = counterparties.get(model.nearCurrency2ReceiverPartyReference, "Party2")
+            check(
+                near_pr.get("receiver") == near_expected_receiver,
+                f"Near receiver mismatch: expected={near_expected_receiver}, got={near_pr.get('receiver')}",
+                "trade.product.economicTerms.payout[0].SettlementPayout.payerReceiver.receiver",
+            )
+        if model.farCurrency2PayerPartyReference:
+            far_expected_payer = counterparties.get(model.farCurrency2PayerPartyReference, "Party2")
+            check(
+                far_pr.get("payer") == far_expected_payer,
+                f"Far payer mismatch: expected={far_expected_payer}, got={far_pr.get('payer')}",
+                "trade.product.economicTerms.payout[1].SettlementPayout.payerReceiver.payer",
+            )
+        if model.farCurrency2ReceiverPartyReference:
+            far_expected_receiver = counterparties.get(model.farCurrency2ReceiverPartyReference, "Party1")
+            check(
+                far_pr.get("receiver") == far_expected_receiver,
+                f"Far receiver mismatch: expected={far_expected_receiver}, got={far_pr.get('receiver')}",
+                "trade.product.economicTerms.payout[1].SettlementPayout.payerReceiver.receiver",
+            )
+
+    pqs = ((trade.get("tradeLot", [{}]) or [{}])[0].get("priceQuantity", []) or [])
+    check(len(pqs) >= 2, "FX swap must emit two priceQuantity entries", "trade.tradeLot[0].priceQuantity")
+    if len(pqs) >= 2:
+        near_qty = pqs[0].get("quantity", []) or []
+        far_qty = pqs[1].get("quantity", []) or []
+        if len(near_qty) >= 2:
+            check(
+                near_qty[0].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.nearCurrency1,
+                "Near leg currency1 mismatch",
+                "trade.tradeLot[0].priceQuantity[0].quantity[0].value.unit.currency.value",
+            )
+            check(
+                near_qty[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.nearCurrency2,
+                "Near leg currency2 mismatch",
+                "trade.tradeLot[0].priceQuantity[0].quantity[1].value.unit.currency.value",
+            )
+        if len(far_qty) >= 2:
+            check(
+                far_qty[0].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.farCurrency1,
+                "Far leg currency1 mismatch",
+                "trade.tradeLot[0].priceQuantity[1].quantity[0].value.unit.currency.value",
+            )
+            check(
+                far_qty[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.farCurrency2,
+                "Far leg currency2 mismatch",
+                "trade.tradeLot[0].priceQuantity[1].quantity[1].value.unit.currency.value",
+            )
+
+    accuracy = (checks_matched / checks_total) * 100 if checks_total else 0.0
+    return (
+        issues,
+        MappingScore(total_fields=checks_total, matched_fields=checks_matched, accuracy_percent=accuracy),
+    )
 
 
 def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> ValidationReport:
@@ -262,7 +440,7 @@ def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> Validati
             warnings=warnings,
         )
 
-    normalized_schema_errors = validate_schema_data("fpml_fx_forward_parsed.schema.json", normalized.to_dict())
+    normalized_schema_errors = validate_normalized_parsed_dict(normalized.to_dict())
     errors.extend(normalized_schema_errors)
 
     trade_dict = cdm_obj.get("trade", {})
@@ -280,7 +458,7 @@ def validate_transformation(fpml_path: str, cdm_obj: Dict[str, Any]) -> Validati
     )
 
 
-def validate_normalized_and_cdm(normalized: NormalizedFxForward, cdm_obj: Dict[str, Any]) -> ValidationReport:
+def validate_normalized_and_cdm(normalized: NormalizedFxTrade, cdm_obj: Dict[str, Any]) -> ValidationReport:
     """
     Validate a *patched* normalized model directly (no re-parse from FpML).
 
@@ -291,10 +469,7 @@ def validate_normalized_and_cdm(normalized: NormalizedFxForward, cdm_obj: Dict[s
     errors: List[ValidationIssue] = []
     warnings: List[ValidationIssue] = []
 
-    normalized_schema_errors = validate_schema_data(
-        "fpml_fx_forward_parsed.schema.json",
-        normalized.to_dict(),
-    )
+    normalized_schema_errors = validate_normalized_parsed_dict(normalized.to_dict())
     errors.extend(normalized_schema_errors)
 
     trade_dict = cdm_obj.get("trade", {})

@@ -11,7 +11,7 @@
   "amount2": 9174311.93,
   "exchangeRate": 1.09,
   "valueDate": "2024-09-01",
-  "settlementType": "CASH",
+  "settlementType": "PHYSICAL",
   "parties": [
     {
       "id": "party1",
@@ -22,7 +22,8 @@
       "name": "International Bank B"
     }
   ],
+  "sourceProduct": "fxForward",
+  "normalizedKind": "fx_spot_forward_like",
   "buyerPartyReference": "party1",
-  "sellerPartyReference": "party2",
-  "sourceProduct": "fxForward"
+  "sellerPartyReference": "party2"
 }

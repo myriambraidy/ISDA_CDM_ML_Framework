@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 class ErrorCode(str, Enum):
@@ -59,8 +59,19 @@ class ValidationReport:
         }
 
 
+# Discriminator for JSON and ``transform_to_cdm_v6`` dispatch; expand union types later.
+NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE = "fx_spot_forward_like"
+NORMALIZED_KIND_FX_SWAP = "fx_swap"
+
+
 @dataclass
 class NormalizedFxForward:
+    """
+    Spot/forward-like FX economics (fxForward, fxSingleLeg, NDF).
+
+    This type is the first member of the planned ``NormalizedFxTrade`` union.
+    """
+
     tradeDate: str
     valueDate: str
     currency1: str
@@ -78,6 +89,8 @@ class NormalizedFxForward:
     currency2PayerPartyReference: Optional[str] = None
     currency2ReceiverPartyReference: Optional[str] = None
     sourceProduct: str = "fxForward"
+    #: Stable tag for transformer/schema dispatch (not FpML element name).
+    normalized_kind: str = NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE
     sourceNamespace: Optional[str] = None
     sourceVersion: Optional[str] = None
     llm_recovered_fields: List[str] = field(default_factory=list)
@@ -97,6 +110,7 @@ class NormalizedFxForward:
             "settlementType": self.settlementType,
             "parties": self.parties,
             "sourceProduct": self.sourceProduct,
+            "normalizedKind": self.normalized_kind,
         }
         if self.settlementCurrency is not None:
             data["settlementCurrency"] = self.settlementCurrency
@@ -131,6 +145,7 @@ class NormalizedFxForward:
             currency2PayerPartyReference=data.get("currency2PayerPartyReference"),
             currency2ReceiverPartyReference=data.get("currency2ReceiverPartyReference"),
             sourceProduct=data.get("sourceProduct", "fxForward"),
+            normalized_kind=data.get("normalizedKind", NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE),
             sourceNamespace=data.get("sourceNamespace"),
             sourceVersion=data.get("sourceVersion"),
             llm_recovered_fields=list(data.get("llm_recovered_fields", [])),
@@ -139,9 +154,121 @@ class NormalizedFxForward:
 
 
 @dataclass
+class NormalizedFxSwap:
+    tradeDate: str
+    nearValueDate: str
+    farValueDate: str
+    nearCurrency1: str
+    nearCurrency2: str
+    nearAmount1: float
+    nearAmount2: float
+    farCurrency1: str
+    farCurrency2: str
+    farAmount1: float
+    farAmount2: float
+    tradeIdentifiers: List[Dict[str, str]] = field(default_factory=list)
+    parties: List[Dict[str, Optional[str]]] = field(default_factory=list)
+    nearExchangeRate: Optional[float] = None
+    farExchangeRate: Optional[float] = None
+    nearSettlementType: str = "PHYSICAL"
+    farSettlementType: str = "PHYSICAL"
+    #: Per-leg payer/receiver from exchangedCurrency2 for near leg.
+    nearCurrency2PayerPartyReference: Optional[str] = None
+    nearCurrency2ReceiverPartyReference: Optional[str] = None
+    #: Per-leg payer/receiver from exchangedCurrency2 for far leg.
+    farCurrency2PayerPartyReference: Optional[str] = None
+    farCurrency2ReceiverPartyReference: Optional[str] = None
+    buyerPartyReference: Optional[str] = None
+    sellerPartyReference: Optional[str] = None
+    sourceProduct: str = "fxSwap"
+    normalized_kind: str = NORMALIZED_KIND_FX_SWAP
+    sourceNamespace: Optional[str] = None
+    sourceVersion: Optional[str] = None
+    llm_recovered_fields: List[str] = field(default_factory=list)
+    productTaxonomyQualifier: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "tradeDate": self.tradeDate,
+            "nearValueDate": self.nearValueDate,
+            "farValueDate": self.farValueDate,
+            "nearCurrency1": self.nearCurrency1,
+            "nearAmount1": self.nearAmount1,
+            "nearCurrency2": self.nearCurrency2,
+            "nearAmount2": self.nearAmount2,
+            "farCurrency1": self.farCurrency1,
+            "farAmount1": self.farAmount1,
+            "farCurrency2": self.farCurrency2,
+            "farAmount2": self.farAmount2,
+            "tradeIdentifiers": self.tradeIdentifiers,
+            "parties": self.parties,
+            "sourceProduct": self.sourceProduct,
+            "normalizedKind": self.normalized_kind,
+        }
+        if self.nearExchangeRate is not None:
+            data["nearExchangeRate"] = self.nearExchangeRate
+        if self.farExchangeRate is not None:
+            data["farExchangeRate"] = self.farExchangeRate
+        data["nearSettlementType"] = self.nearSettlementType
+        data["farSettlementType"] = self.farSettlementType
+        if self.nearCurrency2PayerPartyReference is not None:
+            data["nearCurrency2PayerPartyReference"] = self.nearCurrency2PayerPartyReference
+        if self.nearCurrency2ReceiverPartyReference is not None:
+            data["nearCurrency2ReceiverPartyReference"] = self.nearCurrency2ReceiverPartyReference
+        if self.farCurrency2PayerPartyReference is not None:
+            data["farCurrency2PayerPartyReference"] = self.farCurrency2PayerPartyReference
+        if self.farCurrency2ReceiverPartyReference is not None:
+            data["farCurrency2ReceiverPartyReference"] = self.farCurrency2ReceiverPartyReference
+        if self.buyerPartyReference is not None:
+            data["buyerPartyReference"] = self.buyerPartyReference
+        if self.sellerPartyReference is not None:
+            data["sellerPartyReference"] = self.sellerPartyReference
+        if self.productTaxonomyQualifier is not None:
+            data["productTaxonomyQualifier"] = self.productTaxonomyQualifier
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NormalizedFxSwap":
+        return cls(
+            tradeDate=data.get("tradeDate", ""),
+            nearValueDate=data.get("nearValueDate", ""),
+            farValueDate=data.get("farValueDate", ""),
+            nearCurrency1=data.get("nearCurrency1", ""),
+            nearCurrency2=data.get("nearCurrency2", ""),
+            nearAmount1=float(data.get("nearAmount1")) if data.get("nearAmount1") is not None else 0.0,
+            nearAmount2=float(data.get("nearAmount2")) if data.get("nearAmount2") is not None else 0.0,
+            farCurrency1=data.get("farCurrency1", ""),
+            farCurrency2=data.get("farCurrency2", ""),
+            farAmount1=float(data.get("farAmount1")) if data.get("farAmount1") is not None else 0.0,
+            farAmount2=float(data.get("farAmount2")) if data.get("farAmount2") is not None else 0.0,
+            tradeIdentifiers=list(data.get("tradeIdentifiers", [])),
+            parties=list(data.get("parties", [])),
+            nearExchangeRate=float(data.get("nearExchangeRate")) if data.get("nearExchangeRate") is not None else None,
+            farExchangeRate=float(data.get("farExchangeRate")) if data.get("farExchangeRate") is not None else None,
+            nearSettlementType=data.get("nearSettlementType", "PHYSICAL"),
+            farSettlementType=data.get("farSettlementType", "PHYSICAL"),
+            nearCurrency2PayerPartyReference=data.get("nearCurrency2PayerPartyReference"),
+            nearCurrency2ReceiverPartyReference=data.get("nearCurrency2ReceiverPartyReference"),
+            farCurrency2PayerPartyReference=data.get("farCurrency2PayerPartyReference"),
+            farCurrency2ReceiverPartyReference=data.get("farCurrency2ReceiverPartyReference"),
+            buyerPartyReference=data.get("buyerPartyReference"),
+            sellerPartyReference=data.get("sellerPartyReference"),
+            sourceProduct=data.get("sourceProduct", "fxSwap"),
+            normalized_kind=data.get("normalizedKind", NORMALIZED_KIND_FX_SWAP),
+            sourceNamespace=data.get("sourceNamespace"),
+            sourceVersion=data.get("sourceVersion"),
+            llm_recovered_fields=list(data.get("llm_recovered_fields", [])),
+            productTaxonomyQualifier=data.get("productTaxonomyQualifier"),
+        )
+
+
+NormalizedFxTrade = Union[NormalizedFxForward, NormalizedFxSwap]
+
+
+@dataclass
 class ConversionResult:
     ok: bool
-    normalized: Optional[NormalizedFxForward] = None
+    normalized: Optional[NormalizedFxTrade] = None
     cdm: Optional[Dict[str, Any]] = None
     deterministic_cdm: Optional[Dict[str, Any]] = None
     mapping_agent_cdm: Optional[Dict[str, Any]] = None

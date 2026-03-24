@@ -59,6 +59,8 @@ def inspect_fpml_trade(fpml_path: str) -> Dict[str, Any]:
         # Summarize presence of a few relevant local names.
         found = {k: 0 for k in [
             "valueDate",
+            "nearLeg",
+            "farLeg",
             "exchangedCurrency1",
             "exchangedCurrency2",
             "exchangeRate",
@@ -84,6 +86,13 @@ def inspect_fpml_trade(fpml_path: str) -> Dict[str, Any]:
         "tradeDate": trade_date,
         "product_candidates": product_candidates,
     }
+
+
+def list_supported_fx_adapters() -> Dict[str, Any]:
+    """Return registered FX adapter ids, priorities, and normalized_kind (for ruleset / transform dispatch)."""
+    from fpml_cdm.adapters.registry import describe_fx_adapter_registry
+
+    return {"adapters": describe_fx_adapter_registry()}
 
 
 def get_active_ruleset_summary(adapter_id: str) -> Dict[str, Any]:

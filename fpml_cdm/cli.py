@@ -11,7 +11,13 @@ from .mapping_agent.agent import MappingAgentConfig
 from .parser import parse_fpml_fx
 from .pipeline import convert_fpml_to_cdm
 from .transformer import transform_to_cdm_v6
-from .types import NormalizedFxForward, ParserError, ValidationIssue
+from .types import (
+    NORMALIZED_KIND_FX_SWAP,
+    NormalizedFxForward,
+    NormalizedFxSwap,
+    ParserError,
+    ValidationIssue,
+)
 from .validator import validate_conversion_files, validate_schema_data
 
 
@@ -42,7 +48,11 @@ def cmd_parse(args: argparse.Namespace) -> int:
 def cmd_transform(args: argparse.Namespace) -> int:
     with open(args.input, "r", encoding="utf-8") as f:
         parsed = json.load(f)
-    model = NormalizedFxForward.from_dict(parsed)
+    kind = parsed.get("normalizedKind")
+    if kind == NORMALIZED_KIND_FX_SWAP:
+        model = NormalizedFxSwap.from_dict(parsed)
+    else:
+        model = NormalizedFxForward.from_dict(parsed)
     cdm = transform_to_cdm_v6(model)
     _write_json(cdm, args.output)
     return 0
@@ -58,7 +68,7 @@ def cmd_validate_schema(args: argparse.Namespace) -> int:
     """Validate a JSON file against a schema only (no FpML, no semantic check)."""
     with open(args.input, "r", encoding="utf-8") as f:
         data = json.load(f)
-    schema_name = "cdm_fx_forward.schema.json" if args.schema == "cdm" else "fpml_fx_forward_parsed.schema.json"
+    schema_name = "cdm_fx_forward.schema.json" if args.schema == "cdm" else "fpml_normalized_trade.schema.json"
     issues = validate_schema_data(schema_name, data)
     report = {"valid": len(issues) == 0, "errors": _issues_to_dict(issues)}
     _write_json(report, args.output)

@@ -10,6 +10,7 @@ from .registry import ToolRegistry, ToolSpec
 from .tools import (
     get_active_ruleset_summary,
     inspect_fpml_trade,
+    list_supported_fx_adapters,
     run_conversion_with_patch,
     validate_best_effort,
 )
@@ -58,7 +59,7 @@ You are a deterministic mapping agent for FpML FX derivatives → CDM v6 trades.
 Rules:
 1) You are tool-constrained: you must call tools instead of returning final CDM JSON directly.
 2) You must only propose structured ruleset patches (candidate ordering and derived-field toggles).
-3) Never guess XML structures: use inspect_fpml_trade/get_active_ruleset_summary to see candidate paths.
+3) Never guess XML structures: use inspect_fpml_trade, list_supported_fx_adapters, and get_active_ruleset_summary to see candidate paths.
 4) Prefer patches that reduce schema validation failures first, then semantic mismatches.
 5) Every iteration should try a new patch; avoid repeating identical tool calls.
 """
@@ -121,6 +122,14 @@ def _build_registry() -> ToolRegistry:
     )
     reg.register(
         ToolSpec(
+            name="list_supported_fx_adapters",
+            description="List supported FX FpML adapter_ids (trade child local names), priority, and normalized_kind.",
+            json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=lambda **_: list_supported_fx_adapters(),
+        )
+    )
+    reg.register(
+        ToolSpec(
             name="run_conversion_with_patch",
             description="Apply a structured ruleset patch deterministically, then parse→transform→validate and return CDM JSON plus validation summary.",
             json_schema={
@@ -161,22 +170,19 @@ def _build_registry() -> ToolRegistry:
 
 
 def _detect_supported_adapter_candidates(fpml_path: str) -> List[str]:
-    # Keep conservative: only adapters we have base rules for.
+    from fpml_cdm.adapters.registry import SUPPORTED_FX_ADAPTER_IDS, iter_fx_adapter_ids_by_priority
+
     candidates = inspect_fpml_trade(fpml_path)
     if "error" in candidates:
         return []
-    adapter_ids = {"fxForward", "fxSingleLeg"}
-    found = []
+    found: List[str] = []
     for p in candidates.get("product_candidates") or []:
         aid = p.get("adapter_id")
-        if aid in adapter_ids:
-            found.append(aid)
-    # Deterministic order.
-    for aid in ["fxForward", "fxSingleLeg"]:
-        if aid in found:
-            found.remove(aid)
-            found.insert(0, aid)
-    return list(dict.fromkeys(found))
+        if aid in SUPPORTED_FX_ADAPTER_IDS:
+            found.append(str(aid))
+    order = iter_fx_adapter_ids_by_priority()
+    rank = {aid: i for i, aid in enumerate(order)}
+    return sorted(dict.fromkeys(found), key=lambda x: (rank.get(x, 999), x))
 
 
 def _initial_best(fpml_path: str) -> Tuple[str, Dict[str, Any], Dict[str, Any], int, int]:
@@ -402,7 +408,7 @@ def run_mapping_agent(
                         "role": "user",
                         "content": (
                             "You must call at least one tool (run_conversion_with_patch, "
-                            "get_active_ruleset_summary, inspect_fpml_trade, or validate_best_effort). "
+                            "list_supported_fx_adapters, get_active_ruleset_summary, inspect_fpml_trade, or validate_best_effort). "
                             "Do not respond with only text."
                         ),
                     }

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Parsed FpML FX Swap",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tradeDate",
+    "nearValueDate",
+    "farValueDate",
+    "nearCurrency1",
+    "nearCurrency2",
+    "nearAmount1",
+    "nearAmount2",
+    "farCurrency1",
+    "farCurrency2",
+    "farAmount1",
+    "farAmount2",
+    "tradeIdentifiers",
+    "parties",
+    "sourceProduct",
+    "normalizedKind"
+  ],
+  "properties": {
+    "tradeDate": { "type": "string", "format": "date" },
+    "nearValueDate": { "type": "string", "format": "date" },
+    "farValueDate": { "type": "string", "format": "date" },
+    "nearCurrency1": { "type": "string", "minLength": 3, "maxLength": 3 },
+    "nearCurrency2": { "type": "string", "minLength": 3, "maxLength": 3 },
+    "nearAmount1": { "type": "number" },
+    "nearAmount2": { "type": "number" },
+    "farCurrency1": { "type": "string", "minLength": 3, "maxLength": 3 },
+    "farCurrency2": { "type": "string", "minLength": 3, "maxLength": 3 },
+    "farAmount1": { "type": "number" },
+    "farAmount2": { "type": "number" },
+    "nearExchangeRate": { "type": ["number", "null"] },
+    "farExchangeRate": { "type": ["number", "null"] },
+    "nearSettlementType": { "type": "string", "enum": ["PHYSICAL", "CASH", "REGULAR"] },
+    "farSettlementType": { "type": "string", "enum": ["PHYSICAL", "CASH", "REGULAR"] },
+    "nearCurrency2PayerPartyReference": { "type": ["string", "null"] },
+    "nearCurrency2ReceiverPartyReference": { "type": ["string", "null"] },
+    "farCurrency2PayerPartyReference": { "type": ["string", "null"] },
+    "farCurrency2ReceiverPartyReference": { "type": ["string", "null"] },
+    "tradeIdentifiers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tradeId"],
+        "properties": {
+          "tradeId": { "type": "string" },
+          "issuer": { "type": "string" },
+          "scheme": { "type": "string" }
+        }
+      }
+    },
+    "parties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "buyerPartyReference": { "type": ["string", "null"] },
+    "sellerPartyReference": { "type": ["string", "null"] },
+    "sourceProduct": { "type": "string", "enum": ["fxSwap"] },
+    "normalizedKind": { "type": "string", "enum": ["fx_swap"] },
+    "productTaxonomyQualifier": { "type": "string" }
+  }
+}

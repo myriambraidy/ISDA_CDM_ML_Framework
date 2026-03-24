@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Normalized FpML trade (union)",
+  "description": "Union of per-kind parsed models. Add oneOf branches when new normalized kinds ship.",
+  "oneOf": [
+    {
+      "$ref": "fpml_fx_forward_parsed.schema.json"
+    },
+    {
+      "$ref": "fpml_fx_swap_parsed.schema.json"
+    }
+  ]
+}

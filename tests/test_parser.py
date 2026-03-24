@@ -31,6 +31,34 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(model.settlementType, "CASH")
         self.assertEqual(model.settlementCurrency, "USD")
 
+    def test_parse_fx_swap_matches_expected(self) -> None:
+        model = parse_fpml_fx(str(FIXTURES / "fpml" / "fx_swap.xml"))
+        expected = _load_json(FIXTURES / "expected" / "fx_swap_parsed.json")
+        self.assertEqual(model.to_dict(), expected)
+
+    def test_parse_fx_swap_alt_date_paths(self) -> None:
+        model = parse_fpml_fx(str(FIXTURES / "fpml" / "fx_swap_alt_dates.xml"))
+        self.assertEqual(model.nearValueDate, "2024-07-12")
+        self.assertEqual(model.farValueDate, "2024-10-12")
+
+    def test_parse_fx_swap_single_leg_pair_extracts_per_leg_payer_receiver(self) -> None:
+        model = parse_fpml_fx(
+            str(
+                FIXTURES.parent.parent
+                / "data"
+                / "corpus"
+                / "fpml_official"
+                / "fpml_4_9_5"
+                / "xml"
+                / "fx-derivatives"
+                / "fx-ex08-fx-swap.xml"
+            )
+        )
+        self.assertEqual(model.nearCurrency2PayerPartyReference, "party1")
+        self.assertEqual(model.nearCurrency2ReceiverPartyReference, "party2")
+        self.assertEqual(model.farCurrency2PayerPartyReference, "party2")
+        self.assertEqual(model.farCurrency2ReceiverPartyReference, "party1")
+
     def test_parse_invalid_date_raises_structured_error(self) -> None:
         with self.assertRaises(ParserError) as ctx:
             parse_fpml_fx(str(FIXTURES / "fpml" / "invalid_date.xml"))

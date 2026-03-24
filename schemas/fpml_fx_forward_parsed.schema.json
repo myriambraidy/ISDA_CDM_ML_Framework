@@ -95,6 +95,11 @@
       "type": "string",
       "enum": ["fxForward", "fxSingleLeg"]
     },
+    "normalizedKind": {
+      "type": "string",
+      "enum": ["fx_spot_forward_like"],
+      "description": "Discriminator for transformer dispatch and future normalized union"
+    },
     "productTaxonomyQualifier": {
       "type": "string",
       "description": "Optional ISDA CDM productQualifier override from taxonomy enrichment"
