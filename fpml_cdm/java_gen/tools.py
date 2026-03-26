@@ -22,6 +22,87 @@ TEMPLATE_DIR = Path(__file__).resolve().parent / "java_templates"
 
 _idx: Optional[SchemaIndex] = None
 
+# Default generation target (used when no agent run has set an active target).
+_LEGACY_JAVA_FILENAME = "CdmTradeBuilder.java"
+_LEGACY_JAVA_CLASS = "CdmTradeBuilder"
+_DEFAULT_JAVA_CLASS = "CdmTradeBuilder"
+_DEFAULT_JAVA_FILENAME = "CdmTradeBuilder.java"
+
+_JAVA_TARGET: Dict[str, str] = {
+    "class_name": _DEFAULT_JAVA_CLASS,
+    "filename": _DEFAULT_JAVA_FILENAME,
+}
+
+
+def json_stem_to_java_class_name(stem: str) -> str:
+    """Build a valid Java public class name from a JSON filename stem (PascalCase)."""
+    stem = stem.strip()
+    if not stem:
+        return "GeneratedCdmTrade"
+    parts = re.split(r"[^a-zA-Z0-9]+", stem)
+    parts = [p for p in parts if p]
+    if not parts:
+        return "GeneratedCdmTrade"
+    words: List[str] = []
+    for p in parts:
+        p = re.sub(r"[^a-zA-Z0-9]", "", p)
+        if not p:
+            continue
+        if p[0].isdigit():
+            p = "N" + p
+        words.append(p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper())
+    if not words:
+        return "GeneratedCdmTrade"
+    return "".join(words)
+
+
+def set_java_generation_target(
+    *,
+    cdm_json_path: Optional[str] = None,
+    class_name: Optional[str] = None,
+) -> None:
+    """Set the active output filename and class name for one Java generation run."""
+    global _JAVA_TARGET
+    if class_name is not None:
+        cn = class_name.strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", cn):
+            raise ValueError(f"Invalid Java class name: {class_name!r}")
+    elif cdm_json_path is not None:
+        cn = json_stem_to_java_class_name(Path(cdm_json_path).stem)
+    else:
+        cn = _DEFAULT_JAVA_CLASS
+    _JAVA_TARGET = {"class_name": cn, "filename": f"{cn}.java"}
+
+
+def reset_java_generation_target() -> None:
+    """Restore defaults (e.g. after an agent run)."""
+    global _JAVA_TARGET
+    _JAVA_TARGET = {"class_name": _DEFAULT_JAVA_CLASS, "filename": _DEFAULT_JAVA_FILENAME}
+
+
+def get_active_java_class_name() -> str:
+    return _JAVA_TARGET["class_name"]
+
+
+def get_active_java_filename() -> str:
+    return _JAVA_TARGET["filename"]
+
+
+def _resolve_java_filename(filename: Optional[str]) -> str:
+    """Resolve tool filename: None → active; legacy CdmTradeBuilder.java → active when overridden."""
+    fn = get_active_java_filename() if filename is None else filename
+    if fn == _LEGACY_JAVA_FILENAME and get_active_java_filename() != _LEGACY_JAVA_FILENAME:
+        return get_active_java_filename()
+    return fn
+
+
+def _resolve_java_class_name(class_name: Optional[str]) -> str:
+    """Resolve run_java class: None → active; legacy CdmTradeBuilder → active when overridden."""
+    cn = get_active_java_class_name() if class_name is None else class_name
+    if cn == _LEGACY_JAVA_CLASS and get_active_java_class_name() != _LEGACY_JAVA_CLASS:
+        return get_active_java_class_name()
+    return cn
+
 # Known schema-to-Java type mismatches.
 # The JSON schemas represent dates as strings, but CDM Java uses typed date classes.
 JAVA_TYPE_OVERRIDES: Dict[str, Dict[str, str]] = {
@@ -337,10 +418,10 @@ def list_enum_values(enum_name: str) -> Dict[str, object]:
 
 # ── Tool 5: get_java_template ────────────────────────────────────────
 
-_TEMPLATE = """\
+_JAVA_TEMPLATE_BODY = """\
 // === IMPORTS_PLACEHOLDER ===
 
-public class CdmTradeBuilder {
+public class __CLASS_NAME__ {
 
     public static cdm.event.common.Trade buildTrade() {
         // === BUILDER_CODE_PLACEHOLDER ===
@@ -363,11 +444,16 @@ public class CdmTradeBuilder {
 """
 
 
-def get_java_template() -> Dict[str, str]:
-    """Return the Java file boilerplate template."""
+def _java_template_source_for_class(class_name: str) -> str:
+    return _JAVA_TEMPLATE_BODY.replace("__CLASS_NAME__", class_name)
+
+
+def get_java_template() -> Dict[str, object]:
+    """Return the Java file boilerplate template for the active generation class name."""
+    cn = get_active_java_class_name()
     return {
-        "template": _TEMPLATE,
-        "class_name": "CdmTradeBuilder",
+        "template": _java_template_source_for_class(cn),
+        "class_name": cn,
         "placeholders": [
             "// === IMPORTS_PLACEHOLDER ===",
             "// === BUILDER_CODE_PLACEHOLDER ===",
@@ -379,11 +465,12 @@ def get_java_template() -> Dict[str, str]:
 
 def write_java_file(
     code: str,
-    filename: str = "CdmTradeBuilder.java",
+    filename: Optional[str] = None,
 ) -> Dict[str, object]:
     """Write complete Java source code to the generated/ directory."""
+    fn = _resolve_java_filename(filename)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    path = GENERATED_DIR / filename
+    path = GENERATED_DIR / fn
     path.write_text(code, encoding="utf-8")
     return {
         "success": True,
@@ -395,10 +482,11 @@ def write_java_file(
 # ── Tool 7: read_java_file ───────────────────────────────────────────
 
 def read_java_file(
-    filename: str = "CdmTradeBuilder.java",
+    filename: Optional[str] = None,
 ) -> Dict[str, object]:
     """Read the current content of a generated Java source file."""
-    path = GENERATED_DIR / filename
+    fn = _resolve_java_filename(filename)
+    path = GENERATED_DIR / fn
     if not path.exists():
         return {"error": f"File not found: {path}"}
     content = path.read_text(encoding="utf-8")
@@ -457,7 +545,7 @@ def _suggest_old_text_from_file(content: str, old: str) -> Optional[str]:
 def patch_java_file(
     old_text: str = "",
     new_text: str = "",
-    filename: str = "CdmTradeBuilder.java",
+    filename: Optional[str] = None,
     patches: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, object]:
     """Replace text sections in a generated Java file.
@@ -467,7 +555,8 @@ def patch_java_file(
     Uses exact match first; if not found, tries normalized whitespace match (strip
     trailing per line). On failure, may return suggested_old_text from the file.
     """
-    path = GENERATED_DIR / filename
+    fn = _resolve_java_filename(filename)
+    path = GENERATED_DIR / fn
     if not path.exists():
         return {"error": f"File not found: {path}"}
 
@@ -615,10 +704,11 @@ def _parse_javac_errors(stderr: str, src_path: Path) -> List[Dict[str, object]]:
 
 
 def compile_java(
-    filename: str = "CdmTradeBuilder.java",
+    filename: Optional[str] = None,
 ) -> Dict[str, object]:
     """Compile a Java file against the CDM classpath."""
-    src_path = GENERATED_DIR / filename
+    fn = _resolve_java_filename(filename)
+    src_path = GENERATED_DIR / fn
     if not src_path.exists():
         return {"success": False, "errors": [{"message": f"Source file not found: {src_path}"}], "error_count": 1}
 
@@ -645,7 +735,7 @@ def compile_java(
         return {"success": False, "errors": [{"message": "Compilation timed out (60s)"}], "error_count": 1}
 
     if result.returncode == 0:
-        class_file = str(GENERATED_DIR / filename.replace(".java", ".class"))
+        class_file = str(GENERATED_DIR / fn.replace(".java", ".class"))
         return {"success": True, "class_file": class_file, "warnings": []}
 
     errors = _parse_javac_errors(result.stderr, src_path)
@@ -660,10 +750,11 @@ def compile_java(
 # ── Tool 10: run_java ────────────────────────────────────────────────
 
 def run_java(
-    class_name: str = "CdmTradeBuilder",
+    class_name: Optional[str] = None,
     timeout: int = 30,
 ) -> Dict[str, object]:
     """Execute a compiled Java class and capture output."""
+    cn = _resolve_java_class_name(class_name)
     if not JAR_PATH.exists():
         return {
             "success": False,
@@ -678,7 +769,7 @@ def run_java(
 
     try:
         result = subprocess.run(
-            ["java", "-cp", classpath, class_name],
+            ["java", "-cp", classpath, cn],
             capture_output=True,
             text=True,
             timeout=timeout,

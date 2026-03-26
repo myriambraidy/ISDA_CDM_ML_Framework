@@ -5,9 +5,20 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .types import ErrorCode, NormalizedFxForward, ParserError, ValidationIssue
+from .adapters.registry import SUPPORTED_FX_ADAPTER_IDS, detect_fx_adapter_product, get_fx_adapter_spec
+from .types import (
+    NORMALIZED_KIND_FX_OPTION,
+    NORMALIZED_KIND_FX_SWAP,
+    ErrorCode,
+    NormalizedFxForward,
+    NormalizedFxOption,
+    NormalizedFxSwap,
+    ParserError,
+    ValidationIssue,
+)
 
-SUPPORTED_PRODUCTS = {"fxForward", "fxSingleLeg"}
+# Backward-compatible name: registered FpML ``<trade>`` product local names.
+SUPPORTED_PRODUCTS = SUPPORTED_FX_ADAPTER_IDS
 
 
 def _split_tag(tag: str) -> Tuple[str, str]:
@@ -145,44 +156,14 @@ def _parse_currency(value: Optional[str], path: str, issues: List[ValidationIssu
     return value
 
 
-def _detect_supported_product(trade: ET.Element) -> Tuple[str, ET.Element]:
-    unsupported_products: List[str] = []
-
-    for child in list(trade):
-        lname = _local_name(child.tag)
-        if lname == "tradeHeader":
-            continue
-        if lname in SUPPORTED_PRODUCTS:
-            return lname, child
-        unsupported_products.append(lname)
-
-    if unsupported_products:
-        raise ParserError(
-            [
-                ValidationIssue(
-                    code=ErrorCode.UNSUPPORTED_PRODUCT.value,
-                    message=f"Unsupported product type: {unsupported_products[0]}",
-                    path=f"trade/{unsupported_products[0]}",
-                )
-            ]
-        )
-
-    raise ParserError(
-        [
-            ValidationIssue(
-                code=ErrorCode.UNSUPPORTED_PRODUCT.value,
-                message="No supported product found under trade (expected fxForward or fxSingleLeg)",
-                path="trade",
-            )
-        ]
-    )
-
-
 def parse_fpml_fx(
     xml_path: str,
     strict: bool = True,
     recovery_mode: bool = False,
-) -> "NormalizedFxForward | Tuple[NormalizedFxForward, List[ValidationIssue]]":
+) -> (
+    "NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption "
+    "| Tuple[NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption, List[ValidationIssue]]"
+):
     xml_file = Path(xml_path)
     if not xml_file.exists():
         raise ParserError(
@@ -215,7 +196,10 @@ def parse_fpml_xml(
     xml_content: str,
     strict: bool = True,
     recovery_mode: bool = False,
-) -> "NormalizedFxForward | Tuple[NormalizedFxForward, List[ValidationIssue]]":
+) -> (
+    "NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption "
+    "| Tuple[NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption, List[ValidationIssue]]"
+):
     try:
         root = ET.fromstring(xml_content)
     except ET.ParseError as exc:
@@ -235,7 +219,10 @@ def parse_fpml_root(
     root: ET.Element,
     strict: bool = True,
     recovery_mode: bool = False,
-) -> "NormalizedFxForward | Tuple[NormalizedFxForward, List[ValidationIssue]]":
+) -> (
+    "NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption "
+    "| Tuple[NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption, List[ValidationIssue]]"
+):
     issues: List[ValidationIssue] = []
 
     source_namespace = _namespace(root.tag)
@@ -253,7 +240,9 @@ def parse_fpml_root(
             ]
         )
 
-    source_product, product_node = _detect_supported_product(trade)
+    source_product, product_node = detect_fx_adapter_product(trade)
+    adapter_spec = get_fx_adapter_spec(source_product)
+    normalized_kind = adapter_spec.normalized_kind if adapter_spec else "fx_spot_forward_like"
 
     trade_header = _find_child_local(trade, "tradeHeader")
     if trade_header is None:
@@ -271,63 +260,35 @@ def parse_fpml_root(
     trade_identifiers = []
     if trade_header is not None:
         for pti in _iter_children_local(trade_header, "partyTradeIdentifier"):
-            trade_id = _text(_find_child_local(pti, "tradeId"))
+            trade_id_elem = _find_child_local(pti, "tradeId")
+            trade_id = _text(trade_id_elem)
             if trade_id:
-                trade_identifiers.append({"tradeId": trade_id})
+                entry: Dict[str, str] = {"tradeId": trade_id}
+                party_ref = _find_child_local(pti, "partyReference")
+                if party_ref is not None:
+                    href = party_ref.get("href")
+                    if href:
+                        entry["issuer"] = href
+                if trade_id_elem is not None:
+                    scheme = trade_id_elem.get("tradeIdScheme")
+                    if scheme:
+                        entry["scheme"] = scheme
+                trade_identifiers.append(entry)
 
-    curr1_node = _find_child_local(product_node, "exchangedCurrency1")
-    curr2_node = _find_child_local(product_node, "exchangedCurrency2")
-    curr1_payment = _find_child_local(curr1_node, "paymentAmount")
-    curr2_payment = _find_child_local(curr2_node, "paymentAmount")
+    # Ruleset-driven extraction: evaluate candidate paths deterministically.
+    from .ruleset_engine import extract_fx_product_fields
+    from .rulesets import get_base_ruleset
 
-    currency1 = _parse_currency(
-        _text(_find_child_local(curr1_payment, "currency")),
-        "trade/product/exchangedCurrency1/paymentAmount/currency",
-        issues,
-    )
-    amount1 = _parse_amount(
-        _text(_find_child_local(curr1_payment, "amount")),
-        "trade/product/exchangedCurrency1/paymentAmount/amount",
-        issues,
-    )
-
-    currency2 = _parse_currency(
-        _text(_find_child_local(curr2_payment, "currency")),
-        "trade/product/exchangedCurrency2/paymentAmount/currency",
-        issues,
-    )
-    amount2 = _parse_amount(
-        _text(_find_child_local(curr2_payment, "amount")),
-        "trade/product/exchangedCurrency2/paymentAmount/amount",
-        issues,
+    ruleset = get_base_ruleset(source_product)
+    product_fields = extract_fx_product_fields(
+        product_node=product_node,
+        adapter_id=source_product,
+        ruleset=ruleset,
+        issues=issues,
     )
 
-    exchange_rate: Optional[float] = None
-    exchange_rate_node = _find_child_local(product_node, "exchangeRate")
-    rate_text = _text(_find_child_local(exchange_rate_node, "rate"))
-    if rate_text is not None:
-        exchange_rate = _parse_amount(rate_text, "trade/product/exchangeRate/rate", issues)
-
-    value_date_raw = _text(_find_child_local(product_node, "valueDate"))
-    value_date = _parse_date(value_date_raw, "trade/product/valueDate", issues)
-
-    settlement_type = "PHYSICAL"
-    settlement_currency: Optional[str] = None
-    ndf_node = _find_child_local(product_node, "nonDeliverableSettlement")
-    if ndf_node is None:
-        ndf_node = _find_child_local(product_node, "nonDeliverableForward")
-    if ndf_node is not None:
-        settlement_type = "CASH"
-        settlement_currency = _parse_currency(
-            _text(_find_child_local(ndf_node, "settlementCurrency")),
-            "trade/product/nonDeliverableSettlement/settlementCurrency",
-            issues,
-        )
-
-    buyer_ref = _find_child_local(product_node, "buyerPartyReference")
-    seller_ref = _find_child_local(product_node, "sellerPartyReference")
-    buyer_party_reference = buyer_ref.get("href") if buyer_ref is not None else None
-    seller_party_reference = seller_ref.get("href") if seller_ref is not None else None
+    buyer_party_reference = product_fields.get("buyerPartyReference")
+    seller_party_reference = product_fields.get("sellerPartyReference")
 
     parties = []
     for party in _iter_descendants_local(root, "party"):
@@ -346,24 +307,96 @@ def parse_fpml_root(
                 if issue.level == "error":
                     raise ParserError(issues)
 
-    model = NormalizedFxForward(
-        tradeDate=trade_date or "",
-        valueDate=value_date or "",
-        currency1=currency1 or "",
-        currency2=currency2 or "",
-        amount1=amount1 or 0.0,
-        amount2=amount2 or 0.0,
-        tradeIdentifiers=trade_identifiers,
-        parties=parties,
-        exchangeRate=exchange_rate,
-        settlementType=settlement_type,
-        settlementCurrency=settlement_currency,
-        buyerPartyReference=buyer_party_reference,
-        sellerPartyReference=seller_party_reference,
-        sourceProduct=source_product,
-        sourceNamespace=source_namespace,
-        sourceVersion=source_version,
-    )
+    if normalized_kind == NORMALIZED_KIND_FX_SWAP:
+        model = NormalizedFxSwap(
+            tradeDate=trade_date or "",
+            nearValueDate=product_fields.get("nearValueDate") or "",
+            farValueDate=product_fields.get("farValueDate") or "",
+            nearCurrency1=product_fields.get("nearCurrency1") or "",
+            nearCurrency2=product_fields.get("nearCurrency2") or "",
+            nearAmount1=float(product_fields.get("nearAmount1") or 0.0),
+            nearAmount2=float(product_fields.get("nearAmount2") or 0.0),
+            farCurrency1=product_fields.get("farCurrency1") or "",
+            farCurrency2=product_fields.get("farCurrency2") or "",
+            farAmount1=float(product_fields.get("farAmount1") or 0.0),
+            farAmount2=float(product_fields.get("farAmount2") or 0.0),
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            nearExchangeRate=product_fields.get("nearExchangeRate"),
+            farExchangeRate=product_fields.get("farExchangeRate"),
+            nearSettlementType=product_fields.get("nearSettlementType") or "PHYSICAL",
+            farSettlementType=product_fields.get("farSettlementType") or "PHYSICAL",
+            nearCurrency2PayerPartyReference=product_fields.get("nearCurrency2PayerPartyReference"),
+            nearCurrency2ReceiverPartyReference=product_fields.get("nearCurrency2ReceiverPartyReference"),
+            farCurrency2PayerPartyReference=product_fields.get("farCurrency2PayerPartyReference"),
+            farCurrency2ReceiverPartyReference=product_fields.get("farCurrency2ReceiverPartyReference"),
+            buyerPartyReference=buyer_party_reference,
+            sellerPartyReference=seller_party_reference,
+            sourceProduct=source_product,
+            normalized_kind=normalized_kind,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    elif normalized_kind == NORMALIZED_KIND_FX_OPTION:
+        st_opt = product_fields.get("settlementType") or "PHYSICAL"
+        model = NormalizedFxOption(
+            tradeDate=trade_date or "",
+            expiryDate=product_fields.get("expiryDate") or "",
+            exerciseStyle=product_fields.get("exerciseStyle") or "European",
+            putCurrency=product_fields.get("putCurrency") or "",
+            putAmount=float(product_fields.get("putAmount") or 0.0),
+            callCurrency=product_fields.get("callCurrency") or "",
+            callAmount=float(product_fields.get("callAmount") or 0.0),
+            strikeRate=float(product_fields.get("strikeRate") or 0.0),
+            strikeCurrency1=product_fields.get("strikeCurrency1") or "",
+            strikeCurrency2=product_fields.get("strikeCurrency2") or "",
+            optionType=product_fields.get("optionType") or "Call",
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            buyerPartyReference=buyer_party_reference,
+            sellerPartyReference=seller_party_reference,
+            valueDate=product_fields.get("valueDate"),
+            premiumAmount=product_fields.get("premiumAmount"),
+            premiumCurrency=product_fields.get("premiumCurrency"),
+            premiumPaymentDate=product_fields.get("premiumPaymentDate"),
+            settlementType=st_opt,
+            sourceProduct=source_product,
+            normalized_kind=normalized_kind,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    else:
+        value_date = product_fields.get("valueDate")
+        currency1 = product_fields.get("currency1")
+        amount1 = product_fields.get("amount1")
+        currency2 = product_fields.get("currency2")
+        amount2 = product_fields.get("amount2")
+        exchange_rate = product_fields.get("exchangeRate")
+        settlement_type = product_fields.get("settlementType") or "PHYSICAL"
+        settlement_currency = product_fields.get("settlementCurrency")
+        currency2_payer = product_fields.get("currency2PayerPartyReference")
+        currency2_receiver = product_fields.get("currency2ReceiverPartyReference")
+        model = NormalizedFxForward(
+            tradeDate=trade_date or "",
+            valueDate=value_date or "",
+            currency1=currency1 or "",
+            currency2=currency2 or "",
+            amount1=amount1 or 0.0,
+            amount2=amount2 or 0.0,
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            exchangeRate=exchange_rate,
+            settlementType=settlement_type,
+            settlementCurrency=settlement_currency,
+            buyerPartyReference=buyer_party_reference,
+            sellerPartyReference=seller_party_reference,
+            currency2PayerPartyReference=currency2_payer,
+            currency2ReceiverPartyReference=currency2_receiver,
+            sourceProduct=source_product,
+            normalized_kind=normalized_kind,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
 
     if recovery_mode:
         return model, issues

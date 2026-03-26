@@ -2,15 +2,39 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .llm.base import get_llm_provider
+from .mapping_agent.agent import MappingAgentConfig
 from .parser import parse_fpml_fx
 from .pipeline import convert_fpml_to_cdm
 from .transformer import transform_to_cdm_v6
-from .types import NormalizedFxForward, ParserError, ValidationIssue
+from .types import (
+    NORMALIZED_KIND_FX_OPTION,
+    NORMALIZED_KIND_FX_SWAP,
+    NormalizedFxForward,
+    NormalizedFxOption,
+    NormalizedFxSwap,
+    ParserError,
+    ValidationIssue,
+)
 from .validator import validate_conversion_files, validate_schema_data
+
+
+def _resolve_existing_input_file(raw: str) -> Path:
+    """Resolve a user-supplied path to an absolute Path; raise FileNotFoundError if missing.
+
+    Use this for CLI args so ``tmp\\res\\file.json`` is not mangled by the shell
+    (e.g. Git Bash treats ``\\r`` as carriage return in unquoted paths). Forward
+    slashes or quoting avoids that; resolving here still catches missing files early.
+    """
+    p = Path(raw).expanduser()
+    p = p.resolve(strict=False)
+    if not p.is_file():
+        raise FileNotFoundError(str(p))
+    return p
 
 
 def _write_json(data, output: str | None) -> None:
@@ -40,7 +64,13 @@ def cmd_parse(args: argparse.Namespace) -> int:
 def cmd_transform(args: argparse.Namespace) -> int:
     with open(args.input, "r", encoding="utf-8") as f:
         parsed = json.load(f)
-    model = NormalizedFxForward.from_dict(parsed)
+    kind = parsed.get("normalizedKind")
+    if kind == NORMALIZED_KIND_FX_SWAP:
+        model = NormalizedFxSwap.from_dict(parsed)
+    elif kind == NORMALIZED_KIND_FX_OPTION:
+        model = NormalizedFxOption.from_dict(parsed)
+    else:
+        model = NormalizedFxForward.from_dict(parsed)
     cdm = transform_to_cdm_v6(model)
     _write_json(cdm, args.output)
     return 0
@@ -56,7 +86,7 @@ def cmd_validate_schema(args: argparse.Namespace) -> int:
     """Validate a JSON file against a schema only (no FpML, no semantic check)."""
     with open(args.input, "r", encoding="utf-8") as f:
         data = json.load(f)
-    schema_name = "cdm_fx_forward.schema.json" if args.schema == "cdm" else "fpml_fx_forward_parsed.schema.json"
+    schema_name = "cdm_fx_forward.schema.json" if args.schema == "cdm" else "fpml_normalized_trade.schema.json"
     issues = validate_schema_data(schema_name, data)
     report = {"valid": len(issues) == 0, "errors": _issues_to_dict(issues)}
     _write_json(report, args.output)
@@ -213,9 +243,55 @@ def _resolve_llm_provider(args: argparse.Namespace):
     )
 
 
+def _resolve_mapping_llm_client(args: argparse.Namespace):
+    provider_name = getattr(args, "mapping_provider", "none") or "none"
+    if provider_name == "none":
+        return None
+    if provider_name == "openai":
+        try:
+            import openai
+        except ImportError:
+            raise RuntimeError("openai package not installed. Run: pip install openai")
+        return openai.OpenAI(
+            api_key=getattr(args, "mapping_api_key", None) or os.environ.get("OPENAI_API_KEY"),
+            base_url=getattr(args, "mapping_base_url", None) or None,
+        )
+    if provider_name == "openrouter":
+        from .java_gen.openrouter_client import OpenRouterClient
+
+        api_key = (getattr(args, "mapping_api_key", None) or os.environ.get("OPENROUTER_API_KEY", "")).strip()
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY missing for mapping-provider=openrouter")
+        return OpenRouterClient(api_key=api_key)
+    raise RuntimeError(f"Unknown mapping provider: {provider_name}")
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
+    from dotenv import load_dotenv
+
+    load_dotenv()
     llm_provider = _resolve_llm_provider(args)
-    result = convert_fpml_to_cdm(args.input, strict=not args.no_strict, llm_provider=llm_provider)
+    try:
+        mapping_llm_client = _resolve_mapping_llm_client(args)
+    except RuntimeError as exc:
+        _write_json({"ok": False, "error": str(exc)}, args.output)
+        return 2
+    mapping_cfg = MappingAgentConfig(
+        max_iterations=args.mapping_max_iterations,
+        max_tool_calls=args.mapping_max_tool_calls,
+        timeout_seconds=args.mapping_timeout,
+        semantic_no_improve_limit=args.mapping_no_improve,
+        enable_rosetta=True,
+        rosetta_timeout_seconds=args.mapping_rosetta_timeout,
+    )
+    result = convert_fpml_to_cdm(
+        args.input,
+        strict=not args.no_strict,
+        llm_provider=llm_provider,
+        mapping_llm_client=mapping_llm_client,
+        mapping_model=args.mapping_model,
+        mapping_config=mapping_cfg,
+    )
 
     payload = result.to_dict()
     _write_json(payload, args.output)
@@ -226,7 +302,11 @@ def cmd_convert(args: argparse.Namespace) -> int:
         _write_json(result.cdm, args.cdm_output)
     if args.report_output and result.validation is not None:
         _write_json(result.validation.to_dict(), args.report_output)
+    if args.review_ticket_output and result.review_ticket is not None:
+        _write_json(result.review_ticket, args.review_ticket_output)
 
+    if not result.ok and args.strict_ci:
+        return 1
     return 0 if result.ok else 1
 
 
@@ -238,7 +318,18 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     from .java_gen.agent import run_agent, AgentConfig
 
     err = sys.stderr
-    err.write(f"\n[1/2] Initializing agent for {args.input}...\n")
+    try:
+        cdm_json_path = _resolve_existing_input_file(args.input)
+    except FileNotFoundError as exc:
+        err.write(f"\n  FAIL: CDM JSON not found: {args.input}\n")
+        err.write(f"  Resolved to: {exc.args[0]}\n")
+        err.write(
+            "  Hint: On Git Bash, backslashes can break paths (\\\\r = carriage return). "
+            "Use forward slashes, e.g. tmp/res/transformer-fx-ex8.json, or quote the path.\n"
+        )
+        return 2
+
+    err.write(f"\n[1/2] Initializing agent for {cdm_json_path}...\n")
 
     config = AgentConfig(
         max_iterations=args.max_iterations,
@@ -274,12 +365,16 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     err.write(f"\n[2/2] Running agent loop...\n")
 
     log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
+    java_class = getattr(args, "java_class", None)
+    java_class = java_class.strip() if isinstance(java_class, str) and java_class.strip() else None
+
     result = run_agent(
-        cdm_json_path=args.input,
+        cdm_json_path=str(cdm_json_path),
         llm_client=client,
         model=args.model,
         config=config,
         log_progress=log_progress,
+        java_class_name=java_class,
     )
 
     err.write(f"\nAgent completed in {result.duration_seconds:.1f}s\n")
@@ -297,6 +392,113 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
         err.write(f"  Java file:   {result.java_file}\n")
 
     return 0 if result.success else 1
+
+
+def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
+    """Generate Java code from FpML via mapping agent + existing Java-gen agent."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    from .fpml_to_cdm_java import generate_java_from_fpml
+    from .mapping_agent.agent import MappingAgentConfig
+    from .java_gen.agent import AgentConfig
+
+    err = sys.stderr
+    err.write(f"\n[1/3] Initializing agents for {args.input}...\n")
+
+    mapping_model = args.mapping_model or args.model
+
+    mapping_cfg = MappingAgentConfig(
+        max_iterations=args.mapping_max_iterations,
+        max_tool_calls=args.mapping_max_tool_calls,
+        timeout_seconds=args.mapping_timeout,
+    )
+    java_cfg = AgentConfig(
+        max_iterations=args.max_iterations,
+        max_tool_calls=args.max_tool_calls,
+        timeout_seconds=args.timeout,
+    )
+
+    if getattr(args, "provider", "openrouter") == "openai":
+        try:
+            import openai
+
+            client = openai.OpenAI(
+                api_key=getattr(args, "api_key", None) or None,
+                base_url=getattr(args, "base_url", None) or None,
+            )
+        except ImportError:
+            err.write("  FAIL: openai package not installed. Run: pip install openai\n")
+            return 2
+    else:
+        import os
+        from .java_gen.openrouter_client import OpenRouterClient
+
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            err.write("  FAIL: OPENROUTER_API_KEY not set. Set it in .env or the environment.\n")
+            return 2
+        try:
+            client = OpenRouterClient(api_key=api_key)
+        except ValueError as e:
+            err.write(f"  FAIL: {e}\n")
+            return 2
+
+    err.write(f"  LLM model (java+mapping): {args.model}\n")
+    err.write(f"  Mapping model: {mapping_model}\n")
+    err.write(f"  Output dir: {args.output_dir}\n")
+
+    log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
+
+    err.write("\n[2/3] Converting FpML to best CDM JSON...\n")
+    java_class = getattr(args, "java_class", None)
+    java_class = java_class.strip() if isinstance(java_class, str) and java_class.strip() else None
+
+    java_result, mapping_result, cdm_json_path = generate_java_from_fpml(
+        args.input,
+        llm_client=client,
+        mapping_model=mapping_model,
+        java_model=args.model,
+        mapping_enabled=not bool(args.no_mapping_agent),
+        mapping_config=mapping_cfg,
+        java_config=java_cfg,
+        log_progress=log_progress,
+        output_dir=args.output_dir,
+        java_class_name=java_class,
+    )
+
+    # Write mapping artifacts.
+    if mapping_result is not None:
+        mapping_trace_path = Path(args.output_dir) / "mapping_trace.json"
+        _write_json(
+            {
+                "mapping_result": mapping_result.to_dict(),
+                "trace": mapping_result.trace,
+                "best_cdm_json_path": str(cdm_json_path),
+            },
+            str(mapping_trace_path),
+        )
+        err.write(f"  Mapping trace: {mapping_trace_path}\n")
+
+    err.write("\n[3/3] Running Java code generation agent...\n")
+
+    # The Java agent already ran inside generate_java_from_fpml.
+    err.write(f"\nAgent completed in {java_result.duration_seconds:.1f}s\n")
+    err.write(f"  Iterations:  {java_result.iterations}\n")
+    err.write(f"  Tool calls:  {java_result.total_tool_calls}\n")
+    err.write(f"  Match:       {java_result.match_percentage}%\n")
+    err.write(f"  Status:      {'SUCCESS' if java_result.success else 'FAILURE'}\n")
+    err.write(f"  Summary:     {java_result.summary}\n")
+
+    if args.trace_output:
+        _write_json({"trace": java_result.trace, "result": java_result.to_dict()}, args.trace_output)
+        err.write(f"  Trace:       {args.trace_output}\n")
+
+    if java_result.java_file:
+        err.write(f"  Java file:   {java_result.java_file}\n")
+
+    return 0 if java_result.success else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -345,13 +547,27 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--llm-provider", default="none", help="LLM provider for field recovery: none, gemini, openai_compat (default: none)")
     convert_parser.add_argument("--llm-base-url", default="http://localhost:11434/v1", help="Base URL for openai_compat provider (default: http://localhost:11434/v1)")
     convert_parser.add_argument("--llm-model", default="llama3.2", help="Model name for LLM provider (default: llama3.2)")
+    convert_parser.add_argument("--mapping-provider", choices=("none", "openrouter", "openai"), default="none", help="Provider for mapping-agent refinement (default: none)")
+    convert_parser.add_argument("--mapping-api-key", default=None, help="API key for mapping provider (optional; env vars supported)")
+    convert_parser.add_argument("--mapping-base-url", default=None, help="Base URL for mapping-provider=openai")
+    convert_parser.add_argument("--mapping-model", default="minimax/minimax-m2.5", help="Model for mapping-agent refinement")
+    convert_parser.add_argument("--mapping-max-iterations", type=int, default=10, help="Mapping-agent max iterations")
+    convert_parser.add_argument("--mapping-max-tool-calls", type=int, default=80, help="Mapping-agent max total tool calls")
+    convert_parser.add_argument("--mapping-timeout", type=int, default=300, help="Mapping-agent timeout in seconds")
+    convert_parser.add_argument("--mapping-no-improve", type=int, default=3, help="Mapping-agent semantic no-improvement threshold")
+    convert_parser.add_argument("--mapping-rosetta-timeout", type=int, default=60, help="Rosetta timeout in seconds during mapping compliance checks")
+    convert_parser.add_argument("--review-ticket-output", help="Optional review-ticket JSON output path when non-compliant")
+    convert_parser.add_argument("--strict-ci", action="store_true", help="Return non-zero exit code for non-compliant outputs")
     convert_parser.set_defaults(func=cmd_convert)
 
     java_gen_parser = subparsers.add_parser(
         "generate-java",
         help="Generate Java code from CDM JSON using agent loop (OpenRouter by default)",
     )
-    java_gen_parser.add_argument("input", help="CDM JSON file")
+    java_gen_parser.add_argument(
+        "input",
+        help="CDM JSON file path (prefer forward slashes on Git Bash, e.g. tmp/res/x.json)",
+    )
     java_gen_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
     java_gen_parser.add_argument("--model", default="minimax/minimax-m2.5", help="LLM model name (default: minimax/minimax-m2.5)")
     java_gen_parser.add_argument("--api-key", default=None, help="API key (for --provider openai: OpenAI key; else ignored)")
@@ -360,9 +576,116 @@ def build_parser() -> argparse.ArgumentParser:
     java_gen_parser.add_argument("--max-tool-calls", type=int, default=50, help="Max total tool calls (default: 50)")
     java_gen_parser.add_argument("--timeout", type=int, default=600, help="Agent timeout in seconds; increase for large CDM or slow models (default: 600)")
     java_gen_parser.add_argument("--trace-output", help="Write agent trace JSON to file")
+    java_gen_parser.add_argument(
+        "--java-class",
+        dest="java_class",
+        default=None,
+        help="Public Java class name and generated/<Name>.java (default: derived from CDM JSON filename stem)",
+    )
     java_gen_parser.add_argument("--verbose", "-v", action="store_true", help="Always show per-tool and LLM timing logs")
     java_gen_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-tool and LLM timing logs (default: show when stderr is a TTY)")
     java_gen_parser.set_defaults(func=cmd_generate_java)
+
+    fpml_to_java_parser = subparsers.add_parser(
+        "generate-java-from-fpml",
+        help="Generate Java code from FpML using mapping agent + Java codegen agent",
+    )
+    fpml_to_java_parser.add_argument("input", help="Input FpML XML file")
+    fpml_to_java_parser.add_argument(
+        "--provider",
+        choices=("openrouter", "openai"),
+        default="openrouter",
+        help="LLM provider for mapping agent + Java codegen (default: openrouter)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--model",
+        default="minimax/minimax-m2.5",
+        help="LLM model name for both mapping + Java codegen (default: minimax/minimax-m2.5)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--mapping-model",
+        default=None,
+        help="Optional LLM model override for mapping agent (default: use --model)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (for --provider openai: OpenAI key; else ignored)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Base URL (for --provider openai only)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=20,
+        help="Java codegen max agent iterations (default: 20)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=50,
+        help="Java codegen max total tool calls (default: 50)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="Java codegen agent timeout in seconds (default: 600)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--mapping-max-iterations",
+        type=int,
+        default=10,
+        help="Mapping agent max iterations (default: 10)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--mapping-max-tool-calls",
+        type=int,
+        default=80,
+        help="Mapping agent max total tool calls (default: 80)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--mapping-timeout",
+        type=int,
+        default=300,
+        help="Mapping agent timeout in seconds (default: 300)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--no-mapping-agent",
+        action="store_true",
+        help="Skip mapping agent; use deterministic CDM even if validation fails",
+    )
+    fpml_to_java_parser.add_argument(
+        "--output-dir",
+        default="tmp",
+        help="Directory for intermediate artifacts (best CDM, traces) (default: tmp)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--java-class",
+        dest="java_class",
+        default=None,
+        help="Public Java class name and generated/<Name>.java (default: derived from FpML filename stem)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--trace-output",
+        help="Optional Java agent trace JSON output file (same as generate-java)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Always show per-tool and LLM timing logs",
+    )
+    fpml_to_java_parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress per-tool and LLM timing logs",
+    )
+    fpml_to_java_parser.set_defaults(func=cmd_generate_java_from_fpml)
 
     return parser
 

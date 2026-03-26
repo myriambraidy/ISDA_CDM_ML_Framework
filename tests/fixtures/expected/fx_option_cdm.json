@@ -1,0 +1,312 @@
+{
+  "trade": {
+    "product": {
+      "taxonomy": [
+        {
+          "source": "ISDA",
+          "productQualifier": "ForeignExchange_Option"
+        }
+      ],
+      "economicTerms": {
+        "payout": [
+          {
+            "OptionPayout": {
+              "payerReceiver": {
+                "payer": "Party1",
+                "receiver": "Party2"
+              },
+              "buyerSeller": {
+                "buyer": "Party1",
+                "seller": "Party2"
+              },
+              "optionType": "Call",
+              "strike": {
+                "strikePrice": {
+                  "value": 150.0,
+                  "unit": {
+                    "currency": {
+                      "value": "JPY"
+                    }
+                  },
+                  "perUnitOf": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  },
+                  "priceType": "ExchangeRate"
+                },
+                "meta": {
+                  "globalKey": "2a98822c"
+                }
+              },
+              "exerciseTerms": {
+                "style": "European",
+                "expirationDate": [
+                  {
+                    "adjustableDate": {
+                      "unadjustedDate": "2024-12-20"
+                    },
+                    "meta": {
+                      "globalKey": "f5a39f4a"
+                    }
+                  }
+                ],
+                "expirationTime": {
+                  "hourMinuteTime": "17:00:00",
+                  "businessCenter": {
+                    "value": "GBLO"
+                  }
+                },
+                "expirationTimeType": "SpecificTime",
+                "meta": {
+                  "globalKey": "1df0387e"
+                }
+              },
+              "underlier": {
+                "Observable": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "observable-1"
+                  }
+                }
+              },
+              "priceQuantity": {
+                "quantitySchedule": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "quantity-1"
+                  }
+                },
+                "priceSchedule": [
+                  {
+                    "address": {
+                      "scope": "DOCUMENT",
+                      "value": "price-1"
+                    }
+                  }
+                ],
+                "meta": {
+                  "globalKey": "f2740ba0"
+                }
+              },
+              "meta": {
+                "globalKey": "eedb902e"
+              }
+            },
+            "meta": {
+              "globalKey": "35b3ea7"
+            }
+          }
+        ]
+      },
+      "meta": {
+        "globalKey": "e792761f"
+      }
+    },
+    "tradeLot": [
+      {
+        "priceQuantity": [
+          {
+            "price": [
+              {
+                "value": {
+                  "value": 150.0,
+                  "unit": {
+                    "currency": {
+                      "value": "JPY"
+                    }
+                  },
+                  "perUnitOf": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  },
+                  "priceType": "ExchangeRate"
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "price-1"
+                    }
+                  ]
+                }
+              }
+            ],
+            "quantity": [
+              {
+                "value": {
+                  "value": 150000000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "JPY"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-1"
+                    }
+                  ]
+                }
+              },
+              {
+                "value": {
+                  "value": 1000000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-2"
+                    }
+                  ]
+                }
+              }
+            ],
+            "observable": {
+              "value": {
+                "Asset": {
+                  "Cash": {
+                    "identifier": [
+                      {
+                        "identifier": {
+                          "value": "USD"
+                        },
+                        "identifierType": "CurrencyCode"
+                      }
+                    ]
+                  }
+                }
+              },
+              "meta": {
+                "location": [
+                  {
+                    "scope": "DOCUMENT",
+                    "value": "observable-1"
+                  }
+                ]
+              }
+            },
+            "meta": {
+              "globalKey": "d076f87f"
+            }
+          }
+        ]
+      }
+    ],
+    "counterparty": [
+      {
+        "role": "Party1",
+        "partyReference": {
+          "globalReference": "ac42cbfd",
+          "externalReference": "party1"
+        }
+      },
+      {
+        "role": "Party2",
+        "partyReference": {
+          "globalReference": "e6b0192",
+          "externalReference": "party2"
+        }
+      }
+    ],
+    "tradeIdentifier": [
+      {
+        "issuerReference": {
+          "globalReference": "ac42cbfd",
+          "externalReference": "party1"
+        },
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FXOPT2024060100456"
+            }
+          }
+        ],
+        "meta": {
+          "globalKey": "65d85144"
+        }
+      },
+      {
+        "issuer": {
+          "value": "party1"
+        },
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FXOPT2024060100456"
+            }
+          }
+        ],
+        "meta": {
+          "globalKey": "af559933"
+        }
+      }
+    ],
+    "tradeDate": {
+      "value": "2024-06-01",
+      "meta": {
+        "globalKey": "5742d448"
+      }
+    },
+    "party": [
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party1"
+            }
+          }
+        ],
+        "name": {
+          "value": "Global Bank A"
+        },
+        "meta": {
+          "externalKey": "party1",
+          "globalKey": "ac42cbfd"
+        }
+      },
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party2"
+            }
+          }
+        ],
+        "name": {
+          "value": "International Bank B"
+        },
+        "meta": {
+          "externalKey": "party2",
+          "globalKey": "e6b0192"
+        }
+      }
+    ],
+    "partyRole": [
+      {
+        "role": "Buyer",
+        "partyReference": {
+          "globalReference": "ac42cbfd"
+        }
+      },
+      {
+        "role": "Seller",
+        "partyReference": {
+          "globalReference": "e6b0192"
+        }
+      }
+    ],
+    "meta": {
+      "globalKey": "a2a78b27"
+    }
+  }
+}

@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -151,3 +152,60 @@ def validate_cdm_rosetta(
         error=output.get("error"),
         exit_code=proc.returncode,
     )
+
+
+def validate_cdm_rosetta_with_retry(
+    cdm_data: Dict[str, Any],
+    *,
+    jar_path: Optional[Path] = None,
+    target_type: str = "trade",
+    timeout_seconds: int = 60,
+    max_attempts: int = 2,
+    retry_delay_seconds: float = 0.2,
+) -> RosettaValidationResult:
+    """
+    Retry Rosetta validation once for transient runtime failures/timeouts.
+
+    Infra-not-available conditions (missing JAR/Java) are returned as errors
+    without retrying.
+    """
+    if max_attempts < 1:
+        max_attempts = 1
+
+    # Fail fast for infrastructure unavailability.
+    jar = jar_path or find_jar()
+    if jar is None:
+        return RosettaValidationResult(
+            valid=False,
+            error="Rosetta validator JAR not found. Build it with: cd rosetta-validator && mvn package -q",
+            exit_code=2,
+        )
+    if not java_available():
+        return RosettaValidationResult(
+            valid=False,
+            error="Java not found on PATH. Install JDK 11+ to use Rosetta validation.",
+            exit_code=2,
+        )
+
+    last: Optional[RosettaValidationResult] = None
+    for attempt in range(1, max_attempts + 1):
+        result = validate_cdm_rosetta(
+            cdm_data,
+            jar_path=jar,
+            target_type=target_type,
+            timeout_seconds=timeout_seconds,
+        )
+        last = result
+
+        # Retry only transient execution failures.
+        is_transient = bool(result.error) and (
+            "timed out" in result.error.lower()
+            or "no output from validator" in result.error.lower()
+            or "invalid json from validator" in result.error.lower()
+        )
+        if not is_transient or attempt >= max_attempts:
+            return result
+        time.sleep(retry_delay_seconds)
+
+    assert last is not None
+    return last

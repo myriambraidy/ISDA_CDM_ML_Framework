@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FpML xmlns="http://www.fpml.org/FpML-5/confirmation" fpmlVersion="5-12">
+  <trade>
+    <tradeHeader>
+      <partyTradeIdentifier>
+        <partyReference href="party1"/>
+        <tradeId tradeIdScheme="http://example.com/trade-id">FXSWAP-001</tradeId>
+      </partyTradeIdentifier>
+      <tradeDate>2024-06-01</tradeDate>
+    </tradeHeader>
+    <fxSwap>
+      <nearLeg>
+        <exchangedCurrency1>
+          <paymentAmount><currency>EUR</currency><amount>5000000</amount></paymentAmount>
+        </exchangedCurrency1>
+        <exchangedCurrency2>
+          <paymentAmount><currency>USD</currency><amount>5450000</amount></paymentAmount>
+        </exchangedCurrency2>
+        <exchangeRate><rate>1.09</rate></exchangeRate>
+        <valueDate>2024-06-03</valueDate>
+        <buyerPartyReference href="party1"/>
+        <sellerPartyReference href="party2"/>
+      </nearLeg>
+      <farLeg>
+        <exchangedCurrency1>
+          <paymentAmount><currency>EUR</currency><amount>5000000</amount></paymentAmount>
+        </exchangedCurrency1>
+        <exchangedCurrency2>
+          <paymentAmount><currency>USD</currency><amount>5500000</amount></paymentAmount>
+        </exchangedCurrency2>
+        <exchangeRate><rate>1.10</rate></exchangeRate>
+        <valueDate>2024-09-03</valueDate>
+      </farLeg>
+    </fxSwap>
+  </trade>
+  <party id="party1"><partyName>Global Bank A</partyName></party>
+  <party id="party2"><partyName>Global Bank B</partyName></party>
+</FpML>

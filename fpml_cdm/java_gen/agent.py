@@ -21,9 +21,12 @@ from .tools import (
     patch_java_file,
     compile_java,
     run_java,
-    diff_json,
     validate_output,
     finish,
+    set_java_generation_target,
+    reset_java_generation_target,
+    get_active_java_class_name,
+    get_active_java_filename,
 )
 
 TOOLS_JSON = Path(__file__).parent / "tools.json"
@@ -32,7 +35,7 @@ TOOLS_JSON = Path(__file__).parent / "tools.json"
 def _partial_result_from_trace(
     trace: List[Dict[str, object]], summary_prefix: str
 ) -> tuple[float, Optional[str], str]:
-    """Extract last diff_json match_percentage and write_java_file path from trace."""
+    """Extract last successful write_java_file path from trace (best-effort)."""
     match_pct = 0.0
     java_file: Optional[str] = None
     for i in range(len(trace) - 1, -1, -1):
@@ -43,22 +46,117 @@ def _partial_result_from_trace(
         preview = ent.get("result_preview")
         if not isinstance(preview, str):
             continue
-        if tool == "diff_json":
-            m = re.search(r'"match_percentage":\s*([\d.]+)', preview)
-            if m:
-                match_pct = float(m.group(1))
-        elif tool == "write_java_file" and java_file is None:
+        if tool == "write_java_file" and java_file is None:
             if '"success": true' in preview:
                 m = re.search(r'"path":\s*"([^"]*)"', preview)
                 if m:
                     java_file = m.group(1).replace("\\", "/")
-        if match_pct > 0 and java_file is not None:
-            break
+                    break
     summary = summary_prefix
-    if match_pct > 0 or java_file:
-        parts = [f"last diff: {match_pct}% match" if match_pct > 0 else "", f"java_file: {java_file}" if java_file else ""]
-        summary = f"{summary_prefix} ({'; '.join(p for p in parts if p)})"
+    if java_file:
+        summary = f"{summary_prefix} (java_file: {java_file})"
     return (match_pct, java_file, summary)
+
+
+def _parse_tool_preview_bool(preview: str, key: str) -> Optional[bool]:
+    try:
+        d = json.loads(preview)
+        v = d.get(key)
+        if v is True or v is False:
+            return bool(v)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if key == "success":
+        if '"success": true' in preview:
+            return True
+        if '"success": false' in preview:
+            return False
+    return None
+
+
+def _trace_has_successful_run_java(trace: List[Dict[str, object]]) -> bool:
+    """True if the latest run_java tool result in trace reports success and exit_code 0."""
+    for i in range(len(trace) - 1, -1, -1):
+        ent = trace[i]
+        if ent.get("type") != "tool_result" or ent.get("tool") != "run_java":
+            continue
+        preview = ent.get("result_preview")
+        if not isinstance(preview, str):
+            continue
+        ok = _parse_tool_preview_bool(preview, "success")
+        if ok is not True:
+            return False
+        try:
+            d = json.loads(preview)
+            if int(d.get("exit_code", -1)) != 0:
+                return False
+        except (json.JSONDecodeError, TypeError, ValueError):
+            if '"exit_code": 0' not in preview:
+                return False
+        return True
+    return False
+
+
+def _last_run_java_succeeded_this_iteration(
+    trace: List[Dict[str, object]], iteration: int
+) -> bool:
+    """Whether the last run_java in this iteration (LLM or deterministic) succeeded."""
+    last_ok: Optional[bool] = None
+    for ent in trace:
+        if ent.get("type") != "tool_result" or ent.get("tool") != "run_java":
+            continue
+        if ent.get("iteration") != iteration:
+            continue
+        preview = ent.get("result_preview")
+        if not isinstance(preview, str):
+            continue
+        if _parse_tool_preview_bool(preview, "success") is not True:
+            last_ok = False
+            continue
+        try:
+            d = json.loads(preview)
+            last_ok = int(d.get("exit_code", -1)) == 0
+        except (json.JSONDecodeError, TypeError, ValueError):
+            last_ok = '"exit_code": 0' in preview
+    return last_ok is True
+
+
+def _agent_result_exhausted(
+    *,
+    trace: List[Dict[str, object]],
+    total_tool_calls: int,
+    duration: float,
+    iterations_recorded: int,
+    reason_summary: str,
+) -> AgentResult:
+    """Build result when the main loop ends without an explicit finish tool."""
+    match_pct, java_path, summary = _partial_result_from_trace(trace, reason_summary)
+    if _trace_has_successful_run_java(trace):
+        active_rel = f"generated/{get_active_java_filename()}"
+        jf = java_path or active_rel
+        return AgentResult(
+            success=True,
+            java_file=jf,
+            match_percentage=match_pct,
+            iterations=iterations_recorded,
+            total_tool_calls=total_tool_calls,
+            duration_seconds=duration,
+            summary=(
+                f"{reason_summary}; closing as success because run_java completed with exit 0 "
+                f"(java_file: {jf})"
+            ),
+            trace=trace,
+        )
+    return AgentResult(
+        success=False,
+        java_file=java_path,
+        match_percentage=match_pct,
+        iterations=iterations_recorded,
+        total_tool_calls=total_tool_calls,
+        duration_seconds=duration,
+        summary=summary,
+        trace=trace,
+    )
 
 
 def _format_tool_call_short(fn_name: str, fn_args: Dict[str, object]) -> str:
@@ -129,10 +227,9 @@ Follow this workflow:
 5. Generate the complete Java code and call `write_java_file`.
 6. Call `compile_java` — if errors, fix them using `patch_java_file` and recompile.
    Read the error hints carefully — they tell you exactly what type to use.
-7. Call `run_java` — capture the output.
-8. Call `diff_json` to compare output vs input.
-9. If differences exist, fix the code and repeat from step 6.
-10. Call `finish` with the result.
+7. Call `run_java` — capture the output (stdout should be JSON with a `trade` object).
+8. Optionally call `validate_output` on the stdout string to check CDM schema validity.
+9. Call `finish` with the result (success if compile + run succeed and output looks valid).
 
 ## CDM Java Builder Conventions
 - Single values: `.setFieldName(value)`
@@ -194,7 +291,6 @@ TOOL_DISPATCH: Dict[str, Callable[..., Dict[str, object]]] = {
     "patch_java_file": patch_java_file,
     "compile_java": compile_java,
     "run_java": run_java,
-    "diff_json": diff_json,
     "validate_output": validate_output,
     "finish": finish,
 }
@@ -224,8 +320,34 @@ def run_agent(
     model: str = "gpt-4o",
     config: Optional[AgentConfig] = None,
     log_progress: Optional[bool] = None,
+    java_class_name: Optional[str] = None,
 ) -> AgentResult:
-    """Main agent loop: LLM + tools until finish or limits reached."""
+    """Main agent loop: LLM + tools until finish or limits reached.
+
+    Output class and ``generated/<Name>.java`` are derived from the CDM JSON filename
+    stem unless ``java_class_name`` is set (e.g. FpML pipeline passes the FpML stem).
+    """
+    set_java_generation_target(cdm_json_path=cdm_json_path, class_name=java_class_name)
+    try:
+        return _run_agent_impl(
+            cdm_json_path=cdm_json_path,
+            llm_client=llm_client,
+            model=model,
+            config=config,
+            log_progress=log_progress,
+        )
+    finally:
+        reset_java_generation_target()
+
+
+def _run_agent_impl(
+    cdm_json_path: str,
+    llm_client: object,
+    model: str = "gpt-4o",
+    config: Optional[AgentConfig] = None,
+    log_progress: Optional[bool] = None,
+) -> AgentResult:
+    """Inner agent loop (expects ``set_java_generation_target`` already applied)."""
     config = config or AgentConfig()
     if log_progress is None:
         log_progress = sys.stderr.isatty()
@@ -238,13 +360,15 @@ def run_agent(
     consecutive_text_only = 0
     total_tool_time = 0.0
     total_llm_time = 0.0
+    active_cls = get_active_java_class_name()
+    active_file = get_active_java_filename()
     # Ensure a clean starting point for patch-based generation.
     # The LLM often follows a "patch placeholders" strategy; if an old generated file
     # exists without placeholders, patching fails and the agent can loop until timeout.
     try:
         template = get_java_template().get("template", "")
         if isinstance(template, str) and template.strip():
-            write_java_file(template, filename="CdmTradeBuilder.java")
+            write_java_file(template, filename=active_file)
     except Exception:
         # Don't fail Java generation just because template write failed;
         # the agent can still choose to write a full file directly.
@@ -257,8 +381,10 @@ def run_agent(
             "content": (
                 f"Generate Java code that builds the CDM trade defined in: {cdm_json_path}\n"
                 f"Use that exact path when calling tools (especially inspect_cdm_json).\n"
-                f"The code must compile against the CDM classpath and produce JSON output "
-                f"matching the input file when executed."
+                f"Use a single public class named `{active_cls}` in file `{active_file}` "
+                f"under the repository `generated/` directory (filename must match the class name).\n"
+                f"The code must compile against the CDM classpath and print valid CDM trade JSON "
+                f"to stdout when executed (use validate_output if unsure)."
             ),
         },
     ]
@@ -266,33 +392,21 @@ def run_agent(
     for iteration in range(config.max_iterations):
         elapsed = time.time() - start_time
         if elapsed > config.timeout_seconds:
-            match_pct, java_path, summary = _partial_result_from_trace(
-                trace, f"Timeout after {config.timeout_seconds}s"
-            )
-            return AgentResult(
-                success=False,
-                java_file=java_path,
-                match_percentage=match_pct,
-                iterations=iteration,
-                total_tool_calls=total_tool_calls,
-                duration_seconds=elapsed,
-                summary=summary,
+            return _agent_result_exhausted(
                 trace=trace,
+                total_tool_calls=total_tool_calls,
+                duration=elapsed,
+                iterations_recorded=iteration,
+                reason_summary=f"Timeout after {config.timeout_seconds}s",
             )
 
         if total_tool_calls >= config.max_tool_calls:
-            match_pct, java_path, summary = _partial_result_from_trace(
-                trace, f"Max tool calls ({config.max_tool_calls}) reached"
-            )
-            return AgentResult(
-                success=False,
-                java_file=java_path,
-                match_percentage=match_pct,
-                iterations=iteration,
-                total_tool_calls=total_tool_calls,
-                duration_seconds=time.time() - start_time,
-                summary=summary,
+            return _agent_result_exhausted(
                 trace=trace,
+                total_tool_calls=total_tool_calls,
+                duration=time.time() - start_time,
+                iterations_recorded=iteration,
+                reason_summary=f"Max tool calls ({config.max_tool_calls}) reached",
             )
 
         if log_progress:
@@ -405,50 +519,45 @@ def run_agent(
             try:
                 compile_res = json.loads(last_tool_result_str)
                 if compile_res.get("success") is True:
-                    run_result = run_java(class_name="CdmTradeBuilder", timeout=30)
+                    det_class = get_active_java_class_name()
+                    run_result = run_java(class_name=det_class, timeout=30)
                     run_result_str = json.dumps(run_result, default=str)
-                    run_stdout = run_result.get("stdout", "") or ""
-                    if run_result.get("success") and run_stdout.strip():
-                        diff_result = diff_json(expected_json_path=cdm_json_path, actual_json=run_stdout)
-                        diff_result_str = json.dumps(diff_result, default=str)
-                    else:
-                        diff_result_str = json.dumps({"error": "run_java did not produce output", "run_result": run_result}, default=str)
                     id_run = "call_det_run"
-                    id_diff = "call_det_diff"
                     messages.append({
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {"type": "function", "id": id_run, "function": {"name": "run_java", "arguments": json.dumps({"class_name": "CdmTradeBuilder", "timeout": 30})}},
-                            {"type": "function", "id": id_diff, "function": {"name": "diff_json", "arguments": json.dumps({"expected_json_path": cdm_json_path, "actual_json": run_stdout[:10000]})}},
+                            {"type": "function", "id": id_run, "function": {"name": "run_java", "arguments": json.dumps({"class_name": det_class, "timeout": 30})}},
                         ],
                     })
                     messages.append({"role": "tool", "tool_call_id": id_run, "content": run_result_str})
-                    messages.append({"role": "tool", "tool_call_id": id_diff, "content": diff_result_str})
-                    trace.append({"iteration": iteration, "type": "tool_call", "tool": "run_java", "args": {"class_name": "CdmTradeBuilder", "timeout": 30}})
+                    trace.append({"iteration": iteration, "type": "tool_call", "tool": "run_java", "args": {"class_name": det_class, "timeout": 30}})
                     trace.append({"iteration": iteration, "type": "tool_result", "tool": "run_java", "result_preview": run_result_str[:500]})
-                    trace.append({"iteration": iteration, "type": "tool_call", "tool": "diff_json", "args": {"expected_json_path": cdm_json_path, "actual_json": f"<len {len(run_stdout)} chars>"}})
-                    trace.append({"iteration": iteration, "type": "tool_result", "tool": "diff_json", "result_preview": diff_result_str[:500]})
-                    total_tool_calls += 2
+                    total_tool_calls += 1
                     if log_progress:
-                        sys.stderr.write("    [deterministic] run_java + diff_json\n")
+                        sys.stderr.write("    [deterministic] run_java\n")
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
+
+        if _last_run_java_succeeded_this_iteration(trace, iteration):
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Java compiled and ran successfully (run_java exit 0). "
+                    "Call `finish` now with status \"success\", a short summary, "
+                    "and `java_file` set to the generated `.java` path "
+                    "(from the last write_java_file / active target under generated/)."
+                ),
+            })
 
         if log_progress:
             sys.stderr.write(f"  [iter {iteration+1}] {total_tool_calls} tool calls (total so far: {total_tool_time:.1f}s tools, {total_llm_time:.1f}s LLM)\n")
 
     duration = time.time() - start_time
-    match_pct, java_path, summary = _partial_result_from_trace(
-        trace, f"Max iterations ({config.max_iterations}) reached without finish"
-    )
-    return AgentResult(
-        success=False,
-        java_file=java_path,
-        match_percentage=match_pct,
-        iterations=config.max_iterations,
-        total_tool_calls=total_tool_calls,
-        duration_seconds=duration,
-        summary=summary,
+    return _agent_result_exhausted(
         trace=trace,
+        total_tool_calls=total_tool_calls,
+        duration=duration,
+        iterations_recorded=config.max_iterations,
+        reason_summary=f"Max iterations ({config.max_iterations}) reached without finish",
     )

@@ -1,0 +1,38 @@
+{
+  "tradeDate": "2024-06-01",
+  "nearValueDate": "2024-06-03",
+  "farValueDate": "2024-09-03",
+  "nearCurrency1": "EUR",
+  "nearAmount1": 5000000.0,
+  "nearCurrency2": "USD",
+  "nearAmount2": 5450000.0,
+  "farCurrency1": "EUR",
+  "farAmount1": 5000000.0,
+  "farCurrency2": "USD",
+  "farAmount2": 5500000.0,
+  "tradeIdentifiers": [
+    {
+      "tradeId": "FXSWAP-001",
+      "issuer": "party1",
+      "scheme": "http://example.com/trade-id"
+    }
+  ],
+  "parties": [
+    {
+      "id": "party1",
+      "name": "Global Bank A"
+    },
+    {
+      "id": "party2",
+      "name": "Global Bank B"
+    }
+  ],
+  "sourceProduct": "fxSwap",
+  "normalizedKind": "fx_swap",
+  "nearExchangeRate": 1.09,
+  "farExchangeRate": 1.1,
+  "nearSettlementType": "PHYSICAL",
+  "farSettlementType": "PHYSICAL",
+  "buyerPartyReference": "party1",
+  "sellerPartyReference": "party2"
+}

@@ -1,0 +1,423 @@
+{
+  "trade": {
+    "product": {
+      "taxonomy": [
+        {
+          "source": "ISDA",
+          "productQualifier": "ForeignExchange_Swap"
+        }
+      ],
+      "economicTerms": {
+        "payout": [
+          {
+            "SettlementPayout": {
+              "payerReceiver": {
+                "payer": "Party1",
+                "receiver": "Party2"
+              },
+              "priceQuantity": {
+                "quantitySchedule": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "quantity-1"
+                  }
+                },
+                "priceSchedule": [
+                  {
+                    "address": {
+                      "scope": "DOCUMENT",
+                      "value": "price-1"
+                    }
+                  }
+                ],
+                "meta": {
+                  "globalKey": "f2740ba0"
+                }
+              },
+              "settlementTerms": {
+                "settlementType": "Physical",
+                "settlementDate": {
+                  "valueDate": "2024-06-03",
+                  "meta": {
+                    "globalKey": "87c849a8"
+                  }
+                },
+                "meta": {
+                  "globalKey": "e6dcb124"
+                }
+              },
+              "underlier": {
+                "Observable": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "observable-1"
+                  }
+                }
+              }
+            },
+            "meta": {
+              "globalKey": "27cecd9"
+            }
+          },
+          {
+            "SettlementPayout": {
+              "payerReceiver": {
+                "payer": "Party2",
+                "receiver": "Party1"
+              },
+              "priceQuantity": {
+                "quantitySchedule": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "quantity-3"
+                  }
+                },
+                "priceSchedule": [
+                  {
+                    "address": {
+                      "scope": "DOCUMENT",
+                      "value": "price-2"
+                    }
+                  }
+                ],
+                "meta": {
+                  "globalKey": "54bfc133"
+                }
+              },
+              "settlementTerms": {
+                "settlementType": "Physical",
+                "settlementDate": {
+                  "valueDate": "2024-09-03",
+                  "meta": {
+                    "globalKey": "769efb7d"
+                  }
+                },
+                "meta": {
+                  "globalKey": "2fd07d9a"
+                }
+              },
+              "underlier": {
+                "Observable": {
+                  "address": {
+                    "scope": "DOCUMENT",
+                    "value": "observable-2"
+                  }
+                }
+              }
+            },
+            "meta": {
+              "globalKey": "8e418c20"
+            }
+          }
+        ]
+      },
+      "meta": {
+        "globalKey": "9d0fdfe"
+      }
+    },
+    "tradeLot": [
+      {
+        "priceQuantity": [
+          {
+            "price": [
+              {
+                "value": {
+                  "value": 1.09,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  },
+                  "perUnitOf": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  },
+                  "priceType": "ExchangeRate"
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "price-1"
+                    }
+                  ]
+                }
+              }
+            ],
+            "quantity": [
+              {
+                "value": {
+                  "value": 5000000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-1"
+                    }
+                  ]
+                }
+              },
+              {
+                "value": {
+                  "value": 5450000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-2"
+                    }
+                  ]
+                }
+              }
+            ],
+            "observable": {
+              "value": {
+                "Asset": {
+                  "Cash": {
+                    "identifier": [
+                      {
+                        "identifier": {
+                          "value": "EUR"
+                        },
+                        "identifierType": "CurrencyCode"
+                      }
+                    ]
+                  }
+                }
+              },
+              "meta": {
+                "location": [
+                  {
+                    "scope": "DOCUMENT",
+                    "value": "observable-1"
+                  }
+                ]
+              }
+            },
+            "meta": {
+              "globalKey": "9c6ecc86"
+            }
+          },
+          {
+            "price": [
+              {
+                "value": {
+                  "value": 1.1,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  },
+                  "perUnitOf": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  },
+                  "priceType": "ExchangeRate"
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "price-2"
+                    }
+                  ]
+                }
+              }
+            ],
+            "quantity": [
+              {
+                "value": {
+                  "value": 5000000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "EUR"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-3"
+                    }
+                  ]
+                }
+              },
+              {
+                "value": {
+                  "value": 5500000.0,
+                  "unit": {
+                    "currency": {
+                      "value": "USD"
+                    }
+                  }
+                },
+                "meta": {
+                  "location": [
+                    {
+                      "scope": "DOCUMENT",
+                      "value": "quantity-3-2"
+                    }
+                  ]
+                }
+              }
+            ],
+            "observable": {
+              "value": {
+                "Asset": {
+                  "Cash": {
+                    "identifier": [
+                      {
+                        "identifier": {
+                          "value": "EUR"
+                        },
+                        "identifierType": "CurrencyCode"
+                      }
+                    ]
+                  }
+                }
+              },
+              "meta": {
+                "location": [
+                  {
+                    "scope": "DOCUMENT",
+                    "value": "observable-2"
+                  }
+                ]
+              }
+            },
+            "meta": {
+              "globalKey": "fdede36f"
+            }
+          }
+        ]
+      }
+    ],
+    "counterparty": [
+      {
+        "role": "Party1",
+        "partyReference": {
+          "globalReference": "ac42cbfd",
+          "externalReference": "party1"
+        }
+      },
+      {
+        "role": "Party2",
+        "partyReference": {
+          "globalReference": "7df49501",
+          "externalReference": "party2"
+        }
+      }
+    ],
+    "tradeIdentifier": [
+      {
+        "issuerReference": {
+          "globalReference": "ac42cbfd",
+          "externalReference": "party1"
+        },
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FXSWAP-001",
+              "meta": {
+                "scheme": "http://example.com/trade-id"
+              }
+            }
+          }
+        ],
+        "meta": {
+          "globalKey": "317133f0"
+        }
+      },
+      {
+        "issuer": {
+          "value": "party1"
+        },
+        "assignedIdentifier": [
+          {
+            "identifier": {
+              "value": "FXSWAP-001",
+              "meta": {
+                "scheme": "http://example.com/trade-id"
+              }
+            }
+          }
+        ],
+        "meta": {
+          "globalKey": "abe51bdc"
+        }
+      }
+    ],
+    "tradeDate": {
+      "value": "2024-06-01",
+      "meta": {
+        "globalKey": "5742d448"
+      }
+    },
+    "party": [
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party1"
+            }
+          }
+        ],
+        "name": {
+          "value": "Global Bank A"
+        },
+        "meta": {
+          "externalKey": "party1",
+          "globalKey": "ac42cbfd"
+        }
+      },
+      {
+        "partyId": [
+          {
+            "identifier": {
+              "value": "party2"
+            }
+          }
+        ],
+        "name": {
+          "value": "Global Bank B"
+        },
+        "meta": {
+          "externalKey": "party2",
+          "globalKey": "7df49501"
+        }
+      }
+    ],
+    "partyRole": [
+      {
+        "role": "Buyer",
+        "partyReference": {
+          "globalReference": "ac42cbfd"
+        }
+      },
+      {
+        "role": "Seller",
+        "partyReference": {
+          "globalReference": "7df49501"
+        }
+      }
+    ],
+    "meta": {
+      "globalKey": "7c405afb"
+    }
+  }
+}

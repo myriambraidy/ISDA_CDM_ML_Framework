@@ -49,7 +49,9 @@
         "additionalProperties": false,
         "required": ["tradeId"],
         "properties": {
-          "tradeId": {"type": "string"}
+          "tradeId": {"type": "string"},
+          "issuer": {"type": "string"},
+          "scheme": {"type": "string"}
         }
       }
     },
@@ -61,7 +63,8 @@
         "required": ["id", "name"],
         "properties": {
           "id": {"type": "string"},
-          "name": {"type": ["string", "null"]}
+          "name": {"type": ["string", "null"]},
+          "lei": {"type": "string", "description": "Resolved LEI (enrichment)"}
         }
       }
     },
@@ -80,9 +83,26 @@
     "sellerPartyReference": {
       "type": ["string", "null"]
     },
+    "currency2PayerPartyReference": {
+      "type": ["string", "null"],
+      "description": "exchangedCurrency2/payerPartyReference — drives SettlementPayout.payer"
+    },
+    "currency2ReceiverPartyReference": {
+      "type": ["string", "null"],
+      "description": "exchangedCurrency2/receiverPartyReference — drives SettlementPayout.receiver"
+    },
     "sourceProduct": {
       "type": "string",
       "enum": ["fxForward", "fxSingleLeg"]
+    },
+    "normalizedKind": {
+      "type": "string",
+      "enum": ["fx_spot_forward_like"],
+      "description": "Discriminator for transformer dispatch and future normalized union"
+    },
+    "productTaxonomyQualifier": {
+      "type": "string",
+      "description": "Optional ISDA CDM productQualifier override from taxonomy enrichment"
     }
   }
 }

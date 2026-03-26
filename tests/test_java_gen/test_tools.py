@@ -19,6 +19,9 @@ from fpml_cdm.java_gen.tools import (
     validate_output,
     finish,
     _parse_javac_errors,
+    json_stem_to_java_class_name,
+    set_java_generation_target,
+    reset_java_generation_target,
     GENERATED_DIR,
     JAR_PATH,
 )
@@ -202,6 +205,20 @@ class ListEnumValuesTests(unittest.TestCase):
         self.assertIn("Receiver", json_vals)
 
 
+# ── json_stem_to_java_class_name ─────────────────────────────────────
+
+class JsonStemToJavaClassNameTests(unittest.TestCase):
+
+    def test_fx_forward_cdm(self) -> None:
+        self.assertEqual(json_stem_to_java_class_name("fx_forward_cdm"), "FxForwardCdm")
+
+    def test_transformer_fx_ex8(self) -> None:
+        self.assertEqual(json_stem_to_java_class_name("transformer-fx-ex8"), "TransformerFxEx8")
+
+    def test_empty_fallback(self) -> None:
+        self.assertEqual(json_stem_to_java_class_name(""), "GeneratedCdmTrade")
+
+
 # ── get_java_template ────────────────────────────────────────────────
 
 class GetJavaTemplateTests(unittest.TestCase):
@@ -238,6 +255,15 @@ class GetJavaTemplateTests(unittest.TestCase):
     def test_placeholders_list(self) -> None:
         result = get_java_template()
         self.assertEqual(len(result["placeholders"]), 2)
+
+    def test_respects_active_generation_target(self) -> None:
+        try:
+            set_java_generation_target(class_name="TransformerFxEx8")
+            result = get_java_template()
+            self.assertEqual(result["class_name"], "TransformerFxEx8")
+            self.assertIn("public class TransformerFxEx8", result["template"])
+        finally:
+            reset_java_generation_target()
 
 
 # ── write_java_file ──────────────────────────────────────────────────
@@ -515,10 +541,10 @@ class DiffJsonTests(unittest.TestCase):
 
     def test_extra_in_actual(self) -> None:
         data = json.loads(CDM_FIXTURE.read_text())
-        data["trade"]["meta"] = {"globalKey": "abc123"}
+        data["trade"]["extraField"] = {"someKey": "abc123"}
         result = diff_json(str(CDM_FIXTURE), json.dumps(data))
         self.assertTrue(result["match"])  # extra fields don't count as mismatch
-        self.assertIn("$.trade.meta", result["extra_in_actual"])
+        self.assertIn("$.trade.extraField", result["extra_in_actual"])
 
     def test_float_tolerance(self) -> None:
         import tempfile

@@ -22,7 +22,8 @@
       "name": "International Bank B"
     }
   ],
+  "sourceProduct": "fxForward",
+  "normalizedKind": "fx_spot_forward_like",
   "buyerPartyReference": "party1",
-  "sellerPartyReference": "party2",
-  "sourceProduct": "fxForward"
+  "sellerPartyReference": "party2"
 }
