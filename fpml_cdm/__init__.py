@@ -11,17 +11,20 @@ from .agents import EnrichmentConfig
 from .parser import SUPPORTED_PRODUCTS, parse_fpml_fx, parse_fpml_xml
 from .pipeline import convert_fpml_to_cdm
 from .transformer import (
+    transform_fx_option_to_cdm_v6,
     transform_fx_spot_forward_like_to_cdm_v6,
     transform_fx_swap_to_cdm_v6,
     transform_to_cdm_v6,
 )
 from .types import (
+    NORMALIZED_KIND_FX_OPTION,
     NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE,
     NORMALIZED_KIND_FX_SWAP,
     ConversionResult,
     ErrorCode,
     MappingScore,
     NormalizedFxForward,
+    NormalizedFxOption,
     NormalizedFxSwap,
     NormalizedFxTrade,
     ParserError,
@@ -42,9 +45,11 @@ __all__ = [
     "FxAdapterSpec",
     "SUPPORTED_FX_ADAPTER_IDS",
     "SUPPORTED_PRODUCTS",
+    "NORMALIZED_KIND_FX_OPTION",
     "NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE",
     "NORMALIZED_KIND_FX_SWAP",
     "NormalizedFxForward",
+    "NormalizedFxOption",
     "NormalizedFxSwap",
     "NormalizedFxTrade",
     "describe_fx_adapter_registry",
@@ -53,6 +58,7 @@ __all__ = [
     "iter_fx_adapter_ids_by_priority",
     "parse_fpml_fx",
     "parse_fpml_xml",
+    "transform_fx_option_to_cdm_v6",
     "transform_fx_spot_forward_like_to_cdm_v6",
     "transform_fx_swap_to_cdm_v6",
     "transform_to_cdm_v6",

@@ -36,6 +36,11 @@ class ParserTests(unittest.TestCase):
         expected = _load_json(FIXTURES / "expected" / "fx_swap_parsed.json")
         self.assertEqual(model.to_dict(), expected)
 
+    def test_parse_fx_option_matches_expected(self) -> None:
+        model = parse_fpml_fx(str(FIXTURES / "fpml" / "fx_option.xml"))
+        expected = _load_json(FIXTURES / "expected" / "fx_option_parsed.json")
+        self.assertEqual(model.to_dict(), expected)
+
     def test_parse_fx_swap_alt_date_paths(self) -> None:
         model = parse_fpml_fx(str(FIXTURES / "fpml" / "fx_swap_alt_dates.xml"))
         self.assertEqual(model.nearValueDate, "2024-07-12")

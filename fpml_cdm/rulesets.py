@@ -426,6 +426,146 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
         },
         "derived": {},
     },
+    "fxOption": {
+        "adapter_id": "fxOption",
+        "fields": {
+            "exerciseStyle": {
+                "required": True,
+                "parser": "fx_option_exercise_style",
+                "candidates": [],
+            },
+            "expiryDate": {
+                "required": True,
+                "parser": "date_only",
+                "candidates": [
+                    "europeanExercise/expiryDate/adjustableDate/unadjustedDate",
+                    "europeanExercise/expiryDate",
+                    "americanExercise/earliestExerciseDate",
+                    "americanExercise/expirationDate",
+                    "americanExercise/expirationDate/adjustableDate/unadjustedDate",
+                    "bermudaExercise/bermudaExerciseDates/expirationDate",
+                ],
+            },
+            "putCurrency": {
+                "required": True,
+                "parser": "currency3",
+                "candidates": [
+                    "putCurrencyAmount/currency",
+                ],
+            },
+            "putAmount": {
+                "required": True,
+                "parser": "amount",
+                "candidates": [
+                    "putCurrencyAmount/amount",
+                ],
+            },
+            "callCurrency": {
+                "required": True,
+                "parser": "currency3",
+                "candidates": [
+                    "callCurrencyAmount/currency",
+                ],
+            },
+            "callAmount": {
+                "required": True,
+                "parser": "amount",
+                "candidates": [
+                    "callCurrencyAmount/amount",
+                ],
+            },
+            "strikeRate": {
+                "required": True,
+                "parser": "amount",
+                "candidates": [
+                    "strike/exchangeRate/rate",
+                    "strike/rate",
+                    "exchangeRate/rate",
+                ],
+            },
+            "strikeCurrency1": {
+                "required": True,
+                "parser": "currency3",
+                "candidates": [
+                    "strike/exchangeRate/quotedCurrencyPair/currency1",
+                    "strike/quotedCurrencyPair/currency1",
+                ],
+            },
+            "strikeCurrency2": {
+                "required": True,
+                "parser": "currency3",
+                "candidates": [
+                    "strike/exchangeRate/quotedCurrencyPair/currency2",
+                    "strike/quotedCurrencyPair/currency2",
+                ],
+            },
+            "optionType": {
+                "required": True,
+                "parser": "fx_option_call_put",
+                "candidates": [],
+            },
+            "valueDate": {
+                "required": False,
+                "parser": "date_only",
+                "candidates": [
+                    "valueDate",
+                    "exerciseProcedure/spotRateSource/valueDate",
+                ],
+            },
+            "buyerPartyReference": {
+                "required": False,
+                "parser": "href",
+                "candidates": [
+                    "buyerPartyReference/@href",
+                ],
+            },
+            "sellerPartyReference": {
+                "required": False,
+                "parser": "href",
+                "candidates": [
+                    "sellerPartyReference/@href",
+                ],
+            },
+            "premiumAmount": {
+                "required": False,
+                "parser": "amount",
+                "candidates": [
+                    "premiumAmount/amount",
+                    "premium/paymentAmount/amount",
+                ],
+            },
+            "premiumCurrency": {
+                "required": False,
+                "parser": "currency3",
+                "candidates": [
+                    "premiumAmount/currency",
+                    "premium/paymentAmount/currency",
+                ],
+            },
+            "premiumPaymentDate": {
+                "required": False,
+                "parser": "date_only",
+                "candidates": [
+                    "premium/paymentDate",
+                ],
+            },
+            "settlementType": {
+                "required": False,
+                "parser": "settlement_type_from_ndf_presence",
+                "candidates": [
+                    "settlementType",
+                    "settlementTerms/settlementType",
+                ],
+                "ndf_candidates": [
+                    "nonDeliverableSettlement",
+                    "nonDeliverableForward",
+                ],
+                "cash_value": "CASH",
+                "physical_value": "PHYSICAL",
+            },
+        },
+        "derived": {},
+    },
 }
 
 

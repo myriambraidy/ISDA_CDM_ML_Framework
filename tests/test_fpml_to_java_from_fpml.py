@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fpml_cdm import convert_fpml_to_cdm
 from fpml_cdm.fpml_to_cdm_java import generate_java_from_fpml
 from fpml_cdm.java_gen.agent import AgentResult
+from fpml_cdm.java_gen.tools import json_stem_to_java_class_name
 from fpml_cdm.mapping_agent.agent import MappingAgentConfig, MappingAgentResult
 from fpml_cdm.rosetta_validator import RosettaValidationResult
 
@@ -60,14 +61,22 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
                 ) as mock_java:
 
                     def _mock_java_run(
-                        *, cdm_json_path: str, llm_client: object, model: str, config: object, log_progress: object = None
+                        *,
+                        cdm_json_path: str,
+                        llm_client: object,
+                        model: str,
+                        config: object,
+                        log_progress: object = None,
+                        java_class_name: object = None,
                     ) -> AgentResult:
                         cdm_json_path_p = Path(cdm_json_path)
                         self.assertTrue(cdm_json_path_p.exists())
                         self.assertEqual(_load_json(cdm_json_path_p), expected_cdm)
+                        jc = json_stem_to_java_class_name(fpml_path.stem)
+                        self.assertEqual(java_class_name, jc)
                         return AgentResult(
                             success=True,
-                            java_file="generated/CdmTradeBuilder.java",
+                            java_file=f"generated/{jc}.java",
                             match_percentage=100.0,
                             iterations=1,
                             total_tool_calls=0,
@@ -136,9 +145,10 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
             "fpml_cdm.java_gen.agent.run_agent"
         ) as mock_java:
 
+            jc = json_stem_to_java_class_name(fpml_path.stem)
             mock_java.return_value = AgentResult(
                 success=True,
-                java_file="generated/CdmTradeBuilder.java",
+                java_file=f"generated/{jc}.java",
                 match_percentage=100.0,
                 iterations=1,
                 total_tool_calls=0,

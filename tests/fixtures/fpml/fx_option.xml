@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dataDocument xmlns="http://www.fpml.org/FpML-5/confirmation" fpmlVersion="5-11">
+  <trade>
+    <tradeHeader>
+      <partyTradeIdentifier>
+        <tradeId>FXOPT2024060100456</tradeId>
+      </partyTradeIdentifier>
+      <tradeDate>2024-06-01</tradeDate>
+    </tradeHeader>
+    <fxOption>
+      <buyerPartyReference href="party1"/>
+      <sellerPartyReference href="party2"/>
+      <europeanExercise>
+        <expiryDate>
+          <adjustableDate>
+            <unadjustedDate>2024-12-20</unadjustedDate>
+          </adjustableDate>
+        </expiryDate>
+      </europeanExercise>
+      <putCurrencyAmount>
+        <currency>JPY</currency>
+        <amount>150000000</amount>
+      </putCurrencyAmount>
+      <callCurrencyAmount>
+        <currency>USD</currency>
+        <amount>1000000</amount>
+      </callCurrencyAmount>
+      <strike>
+        <exchangeRate>
+          <quotedCurrencyPair>
+            <currency1>USD</currency1>
+            <currency2>JPY</currency2>
+          </quotedCurrencyPair>
+          <rate>150.00</rate>
+        </exchangeRate>
+      </strike>
+    </fxOption>
+  </trade>
+  <party id="party1">
+    <partyName>Global Bank A</partyName>
+  </party>
+  <party id="party2">
+    <partyName>International Bank B</partyName>
+  </party>
+</dataDocument>

@@ -27,6 +27,12 @@ class TransformerTests(unittest.TestCase):
         expected = _load_json(FIXTURES / "expected" / "fx_swap_cdm.json")
         self.assertEqual(cdm, expected)
 
+    def test_transform_matches_expected_option_shape(self) -> None:
+        model = parse_fpml_fx(str(FIXTURES / "fpml" / "fx_option.xml"))
+        cdm = transform_to_cdm_v6(model)
+        expected = _load_json(FIXTURES / "expected" / "fx_option_cdm.json")
+        self.assertEqual(cdm, expected)
+
     def test_swap_leg_payer_receiver_uses_leg_specific_currency2_refs(self) -> None:
         model = parse_fpml_fx(
             str(

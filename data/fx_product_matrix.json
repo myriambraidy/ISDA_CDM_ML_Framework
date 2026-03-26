@@ -27,11 +27,20 @@
     ]
   },
   {
+    "adapter_id": "fxOption",
+    "priority": "P1",
+    "normalized_kind": "fx_option",
+    "cdm_product_qualifier_target": "ForeignExchange_Option",
+    "status": "done",
+    "example_paths": ["tests/fixtures/fpml/fx_option.xml"]
+  },
+  {
     "adapter_id": "fxSingleLegOption",
     "priority": "P1",
     "normalized_kind": "fx_option",
-    "cdm_product_qualifier_target": "TBD",
+    "cdm_product_qualifier_target": "ForeignExchange_Option",
     "status": "planned",
-    "example_paths": []
+    "example_paths": [],
+    "notes": "Alternate FpML trade child name; register when corpus shows distinct structure from fxOption."
   }
 ]

@@ -48,6 +48,12 @@ FX_ADAPTER_REGISTRY: Tuple[FxAdapterSpec, ...] = (
         normalized_kind="fx_swap",
         description="Two-leg FX swap (near and far settlement)",
     ),
+    FxAdapterSpec(
+        adapter_id="fxOption",
+        priority=25,
+        normalized_kind="fx_option",
+        description="FX vanilla option (European/American/Bermuda exercise)",
+    ),
 )
 
 _ADAPTER_BY_ID: Dict[str, FxAdapterSpec] = {s.adapter_id: s for s in FX_ADAPTER_REGISTRY}
@@ -76,6 +82,12 @@ def _economic_presence_score(product_el: ET.Element) -> int:
         "exchangeRate",
         "nonDeliverableSettlement",
         "nonDeliverableForward",
+        "putCurrencyAmount",
+        "callCurrencyAmount",
+        "europeanExercise",
+        "americanExercise",
+        "bermudaExercise",
+        "strike",
     ):
         if tag in names:
             score += 1

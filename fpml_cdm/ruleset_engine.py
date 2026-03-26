@@ -7,11 +7,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .adapters.registry import get_fx_adapter_spec
 from .types import (
+    NORMALIZED_KIND_FX_OPTION,
     NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE,
     NORMALIZED_KIND_FX_SWAP,
     ErrorCode,
     NormalizedFxForward,
+    NormalizedFxOption,
     NormalizedFxSwap,
+    NormalizedFxTrade,
     ParserError,
     ValidationIssue,
 )
@@ -236,6 +239,98 @@ def _parse_field_value(
     raise ValueError(f"Unknown parser type in ruleset: {parser}")
 
 
+def _fx_option_exercise_style_from_node(product_node: Optional[ET.Element]) -> str:
+    if product_node is None:
+        return "European"
+    for tag, style in (
+        ("europeanExercise", "European"),
+        ("americanExercise", "American"),
+        ("bermudaExercise", "Bermuda"),
+    ):
+        if _find_child_local(product_node, tag) is not None:
+            return style
+    return "European"
+
+
+def _fx_option_call_put_from_node(product_node: Optional[ET.Element]) -> str:
+    if product_node is None:
+        return "Call"
+    side_el = _find_child_local(product_node, "side")
+    if side_el is not None and _text(side_el):
+        v = _text(side_el).strip().capitalize()
+        if v in ("Call", "Put"):
+            return v
+    return "Call"
+
+
+def _empty_normalized_for_adapter(
+    adapter_id: str,
+    nk: str,
+    *,
+    source_namespace: Optional[str] = None,
+    source_version: Optional[str] = None,
+) -> NormalizedFxTrade:
+    if nk == NORMALIZED_KIND_FX_SWAP:
+        return NormalizedFxSwap(
+            tradeDate="",
+            nearValueDate="",
+            farValueDate="",
+            nearCurrency1="",
+            nearCurrency2="",
+            nearAmount1=0.0,
+            nearAmount2=0.0,
+            farCurrency1="",
+            farCurrency2="",
+            farAmount1=0.0,
+            farAmount2=0.0,
+            tradeIdentifiers=[],
+            parties=[],
+            sourceProduct=adapter_id,
+            normalized_kind=nk,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    if nk == NORMALIZED_KIND_FX_OPTION:
+        return NormalizedFxOption(
+            tradeDate="",
+            expiryDate="",
+            exerciseStyle="European",
+            putCurrency="",
+            putAmount=0.0,
+            callCurrency="",
+            callAmount=0.0,
+            strikeRate=0.0,
+            strikeCurrency1="",
+            strikeCurrency2="",
+            optionType="Call",
+            tradeIdentifiers=[],
+            parties=[],
+            sourceProduct=adapter_id,
+            normalized_kind=nk,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    return NormalizedFxForward(
+        tradeDate="",
+        valueDate="",
+        currency1="",
+        currency2="",
+        amount1=0.0,
+        amount2=0.0,
+        tradeIdentifiers=[],
+        parties=[],
+        exchangeRate=None,
+        settlementType="PHYSICAL",
+        settlementCurrency=None,
+        buyerPartyReference=None,
+        sellerPartyReference=None,
+        sourceProduct=adapter_id,
+        normalized_kind=nk,
+        sourceNamespace=source_namespace,
+        sourceVersion=source_version,
+    )
+
+
 def extract_fx_product_fields(
     product_node: Optional[ET.Element],
     adapter_id: str,
@@ -249,10 +344,17 @@ def extract_fx_product_fields(
         for field_name, field_def in fields.items():
             if field_name == "settlementType":
                 continue
-            out[field_name] = None
+            parser = field_def.get("parser")
+            if parser == "fx_option_exercise_style":
+                out[field_name] = "European"
+            elif parser == "fx_option_call_put":
+                out[field_name] = "Call"
+            else:
+                out[field_name] = None
             if not bool(field_def.get("required", False)):
                 continue
-            parser = field_def.get("parser")
+            if parser in ("fx_option_exercise_style", "fx_option_call_put"):
+                continue
             candidates: List[str] = list(field_def.get("candidates") or [])
             fallback_path = candidates[0] if candidates else field_name
             issue_path = f"trade/{adapter_id}/{field_name}/{fallback_path}"
@@ -275,6 +377,12 @@ def extract_fx_product_fields(
     # 1) scalar fields by candidate evaluation (including settlement types).
     for field_name, field_def in fields.items():
         parser = field_def.get("parser")
+        if parser == "fx_option_exercise_style":
+            out[field_name] = _fx_option_exercise_style_from_node(product_node)
+            continue
+        if parser == "fx_option_call_put":
+            out[field_name] = _fx_option_call_put_from_node(product_node)
+            continue
         if parser == "settlement_type_from_ndf_presence":
             candidates: List[str] = list(field_def.get("candidates") or [])
             ndf_candidates = field_def.get("ndf_candidates") or []
@@ -377,7 +485,9 @@ def parse_fpml_fx_with_ruleset(
     ruleset: Dict[str, Any],
     strict: bool = True,
     recovery_mode: bool = False,
-) -> Tuple[NormalizedFxForward | NormalizedFxSwap, List[ValidationIssue]] | NormalizedFxForward | NormalizedFxSwap:
+) -> (
+    Tuple[NormalizedFxTrade, List[ValidationIssue]] | NormalizedFxTrade
+):
     """
     Parse an FpML file using a provided adapter ruleset to extract
     the FX product economic fields deterministically.
@@ -396,46 +506,7 @@ def parse_fpml_fx_with_ruleset(
         ]
         if strict and not recovery_mode:
             raise ParserError(issues)
-        if _nk == NORMALIZED_KIND_FX_SWAP:
-            model = NormalizedFxSwap(
-                tradeDate="",
-                nearValueDate="",
-                farValueDate="",
-                nearCurrency1="",
-                nearCurrency2="",
-                nearAmount1=0.0,
-                nearAmount2=0.0,
-                farCurrency1="",
-                farCurrency2="",
-                farAmount1=0.0,
-                farAmount2=0.0,
-                tradeIdentifiers=[],
-                parties=[],
-                sourceProduct=adapter_id,
-                normalized_kind=_nk,
-                sourceNamespace=None,
-                sourceVersion=None,
-            )
-        else:
-            model = NormalizedFxForward(
-            tradeDate="",
-            valueDate="",
-            currency1="",
-            currency2="",
-            amount1=0.0,
-            amount2=0.0,
-            tradeIdentifiers=[],
-            parties=[],
-            exchangeRate=None,
-            settlementType="PHYSICAL",
-            settlementCurrency=None,
-            buyerPartyReference=None,
-            sellerPartyReference=None,
-            sourceProduct=adapter_id,
-            normalized_kind=_nk,
-            sourceNamespace=None,
-                sourceVersion=None,
-            )
+        model = _empty_normalized_for_adapter(adapter_id, _nk)
         return (model, issues) if recovery_mode else model
 
     try:
@@ -450,46 +521,7 @@ def parse_fpml_fx_with_ruleset(
         ]
         if strict and not recovery_mode:
             raise ParserError(issues)
-        if _nk == NORMALIZED_KIND_FX_SWAP:
-            model = NormalizedFxSwap(
-                tradeDate="",
-                nearValueDate="",
-                farValueDate="",
-                nearCurrency1="",
-                nearCurrency2="",
-                nearAmount1=0.0,
-                nearAmount2=0.0,
-                farCurrency1="",
-                farCurrency2="",
-                farAmount1=0.0,
-                farAmount2=0.0,
-                tradeIdentifiers=[],
-                parties=[],
-                sourceProduct=adapter_id,
-                normalized_kind=_nk,
-                sourceNamespace=None,
-                sourceVersion=None,
-            )
-        else:
-            model = NormalizedFxForward(
-            tradeDate="",
-            valueDate="",
-            currency1="",
-            currency2="",
-            amount1=0.0,
-            amount2=0.0,
-            tradeIdentifiers=[],
-            parties=[],
-            exchangeRate=None,
-            settlementType="PHYSICAL",
-            settlementCurrency=None,
-            buyerPartyReference=None,
-            sellerPartyReference=None,
-            sourceProduct=adapter_id,
-            normalized_kind=_nk,
-            sourceNamespace=None,
-                sourceVersion=None,
-            )
+        model = _empty_normalized_for_adapter(adapter_id, _nk)
         return (model, issues) if recovery_mode else model
 
     issues: List[ValidationIssue] = []
@@ -505,46 +537,9 @@ def parse_fpml_fx_with_ruleset(
                 path="trade",
             )
         )
-        if _nk == NORMALIZED_KIND_FX_SWAP:
-            model = NormalizedFxSwap(
-                tradeDate="",
-                nearValueDate="",
-                farValueDate="",
-                nearCurrency1="",
-                nearCurrency2="",
-                nearAmount1=0.0,
-                nearAmount2=0.0,
-                farCurrency1="",
-                farCurrency2="",
-                farAmount1=0.0,
-                farAmount2=0.0,
-                tradeIdentifiers=[],
-                parties=[],
-                sourceProduct=adapter_id,
-                normalized_kind=_nk,
-                sourceNamespace=None,
-                sourceVersion=source_version,
-            )
-        else:
-            model = NormalizedFxForward(
-            tradeDate="",
-            valueDate="",
-            currency1="",
-            currency2="",
-            amount1=0.0,
-            amount2=0.0,
-            tradeIdentifiers=[],
-            parties=[],
-            exchangeRate=None,
-            settlementType="PHYSICAL",
-            settlementCurrency=None,
-            buyerPartyReference=None,
-            sellerPartyReference=None,
-            sourceProduct=adapter_id,
-            normalized_kind=_nk,
-            sourceNamespace=None,
-                sourceVersion=source_version,
-            )
+        model = _empty_normalized_for_adapter(
+            adapter_id, _nk, source_namespace=None, source_version=source_version
+        )
         if strict and not recovery_mode and issues:
             raise ParserError(issues)
         return (model, issues) if recovery_mode else model
@@ -631,6 +626,34 @@ def parse_fpml_fx_with_ruleset(
             farExchangeRate=product_fields.get("farExchangeRate"),
             buyerPartyReference=product_fields.get("buyerPartyReference"),
             sellerPartyReference=product_fields.get("sellerPartyReference"),
+            sourceProduct=adapter_id,
+            normalized_kind=_nk,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    elif _nk == NORMALIZED_KIND_FX_OPTION:
+        settlement_type = product_fields.get("settlementType", "PHYSICAL") or "PHYSICAL"
+        model = NormalizedFxOption(
+            tradeDate=trade_date or "",
+            expiryDate=product_fields.get("expiryDate") or "",
+            exerciseStyle=product_fields.get("exerciseStyle") or "European",
+            putCurrency=product_fields.get("putCurrency") or "",
+            putAmount=float(product_fields.get("putAmount") or 0.0),
+            callCurrency=product_fields.get("callCurrency") or "",
+            callAmount=float(product_fields.get("callAmount") or 0.0),
+            strikeRate=float(product_fields.get("strikeRate") or 0.0),
+            strikeCurrency1=product_fields.get("strikeCurrency1") or "",
+            strikeCurrency2=product_fields.get("strikeCurrency2") or "",
+            optionType=product_fields.get("optionType") or "Call",
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            buyerPartyReference=product_fields.get("buyerPartyReference"),
+            sellerPartyReference=product_fields.get("sellerPartyReference"),
+            valueDate=product_fields.get("valueDate"),
+            premiumAmount=product_fields.get("premiumAmount"),
+            premiumCurrency=product_fields.get("premiumCurrency"),
+            premiumPaymentDate=product_fields.get("premiumPaymentDate"),
+            settlementType=settlement_type,
             sourceProduct=adapter_id,
             normalized_kind=_nk,
             sourceNamespace=source_namespace,

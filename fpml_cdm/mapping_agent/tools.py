@@ -68,6 +68,12 @@ def inspect_fpml_trade(fpml_path: str) -> Dict[str, Any]:
             "nonDeliverableForward",
             "buyerPartyReference",
             "sellerPartyReference",
+            "europeanExercise",
+            "americanExercise",
+            "bermudaExercise",
+            "putCurrencyAmount",
+            "callCurrencyAmount",
+            "strike",
         ]}
         # Count occurrences within this subtree.
         for elem in child.iter():

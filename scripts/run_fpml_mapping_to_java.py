@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from fpml_cdm.mapping_agent.agent import MappingAgentConfig, run_mapping_agent
 from fpml_cdm.parser_enrichment import ParserEnrichmentConfig, run_parser_enrichment
 from fpml_cdm.java_gen.agent import AgentConfig, run_agent
+from fpml_cdm.java_gen.tools import json_stem_to_java_class_name
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -324,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         model=java_model,
         config=java_cfg,
         log_progress=log_progress and bool(args.verbose or not args.quiet),
+        java_class_name=json_stem_to_java_class_name(Path(args.input).stem),
     )
     print(
         f"[2/3] Java codegen done: success={java_result.success} "

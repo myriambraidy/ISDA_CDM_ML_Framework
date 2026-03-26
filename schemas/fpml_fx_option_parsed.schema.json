@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Normalized FpML fxOption",
+  "type": "object",
+  "required": [
+    "tradeDate",
+    "expiryDate",
+    "exerciseStyle",
+    "putCurrency",
+    "putAmount",
+    "callCurrency",
+    "callAmount",
+    "strikeRate",
+    "strikeCurrency1",
+    "strikeCurrency2",
+    "optionType",
+    "normalizedKind",
+    "sourceProduct"
+  ],
+  "properties": {
+    "tradeDate": { "type": "string" },
+    "expiryDate": { "type": "string" },
+    "exerciseStyle": { "type": "string" },
+    "putCurrency": { "type": "string" },
+    "putAmount": { "type": "number" },
+    "callCurrency": { "type": "string" },
+    "callAmount": { "type": "number" },
+    "strikeRate": { "type": "number" },
+    "strikeCurrency1": { "type": "string" },
+    "strikeCurrency2": { "type": "string" },
+    "optionType": { "type": "string" },
+    "tradeIdentifiers": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "parties": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "buyerPartyReference": { "type": ["string", "null"] },
+    "sellerPartyReference": { "type": ["string", "null"] },
+    "valueDate": { "type": ["string", "null"] },
+    "premiumAmount": { "type": ["number", "null"] },
+    "premiumCurrency": { "type": ["string", "null"] },
+    "premiumPaymentDate": { "type": ["string", "null"] },
+    "settlementType": { "type": "string" },
+    "sourceProduct": { "type": "string" },
+    "normalizedKind": { "type": "string", "enum": ["fx_option"] },
+    "sourceNamespace": { "type": ["string", "null"] },
+    "sourceVersion": { "type": ["string", "null"] },
+    "llm_recovered_fields": { "type": "array", "items": { "type": "string" } },
+    "productTaxonomyQualifier": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

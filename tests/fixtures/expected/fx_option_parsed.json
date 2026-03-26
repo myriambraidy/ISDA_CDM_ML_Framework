@@ -1,0 +1,33 @@
+{
+  "tradeDate": "2024-06-01",
+  "expiryDate": "2024-12-20",
+  "exerciseStyle": "European",
+  "putCurrency": "JPY",
+  "putAmount": 150000000.0,
+  "callCurrency": "USD",
+  "callAmount": 1000000.0,
+  "strikeRate": 150.0,
+  "strikeCurrency1": "USD",
+  "strikeCurrency2": "JPY",
+  "optionType": "Call",
+  "tradeIdentifiers": [
+    {
+      "tradeId": "FXOPT2024060100456"
+    }
+  ],
+  "parties": [
+    {
+      "id": "party1",
+      "name": "Global Bank A"
+    },
+    {
+      "id": "party2",
+      "name": "International Bank B"
+    }
+  ],
+  "settlementType": "PHYSICAL",
+  "sourceProduct": "fxOption",
+  "normalizedKind": "fx_option",
+  "buyerPartyReference": "party1",
+  "sellerPartyReference": "party2"
+}

@@ -12,13 +12,29 @@ from .parser import parse_fpml_fx
 from .pipeline import convert_fpml_to_cdm
 from .transformer import transform_to_cdm_v6
 from .types import (
+    NORMALIZED_KIND_FX_OPTION,
     NORMALIZED_KIND_FX_SWAP,
     NormalizedFxForward,
+    NormalizedFxOption,
     NormalizedFxSwap,
     ParserError,
     ValidationIssue,
 )
 from .validator import validate_conversion_files, validate_schema_data
+
+
+def _resolve_existing_input_file(raw: str) -> Path:
+    """Resolve a user-supplied path to an absolute Path; raise FileNotFoundError if missing.
+
+    Use this for CLI args so ``tmp\\res\\file.json`` is not mangled by the shell
+    (e.g. Git Bash treats ``\\r`` as carriage return in unquoted paths). Forward
+    slashes or quoting avoids that; resolving here still catches missing files early.
+    """
+    p = Path(raw).expanduser()
+    p = p.resolve(strict=False)
+    if not p.is_file():
+        raise FileNotFoundError(str(p))
+    return p
 
 
 def _write_json(data, output: str | None) -> None:
@@ -51,6 +67,8 @@ def cmd_transform(args: argparse.Namespace) -> int:
     kind = parsed.get("normalizedKind")
     if kind == NORMALIZED_KIND_FX_SWAP:
         model = NormalizedFxSwap.from_dict(parsed)
+    elif kind == NORMALIZED_KIND_FX_OPTION:
+        model = NormalizedFxOption.from_dict(parsed)
     else:
         model = NormalizedFxForward.from_dict(parsed)
     cdm = transform_to_cdm_v6(model)
@@ -300,7 +318,18 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     from .java_gen.agent import run_agent, AgentConfig
 
     err = sys.stderr
-    err.write(f"\n[1/2] Initializing agent for {args.input}...\n")
+    try:
+        cdm_json_path = _resolve_existing_input_file(args.input)
+    except FileNotFoundError as exc:
+        err.write(f"\n  FAIL: CDM JSON not found: {args.input}\n")
+        err.write(f"  Resolved to: {exc.args[0]}\n")
+        err.write(
+            "  Hint: On Git Bash, backslashes can break paths (\\\\r = carriage return). "
+            "Use forward slashes, e.g. tmp/res/transformer-fx-ex8.json, or quote the path.\n"
+        )
+        return 2
+
+    err.write(f"\n[1/2] Initializing agent for {cdm_json_path}...\n")
 
     config = AgentConfig(
         max_iterations=args.max_iterations,
@@ -336,12 +365,16 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     err.write(f"\n[2/2] Running agent loop...\n")
 
     log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
+    java_class = getattr(args, "java_class", None)
+    java_class = java_class.strip() if isinstance(java_class, str) and java_class.strip() else None
+
     result = run_agent(
-        cdm_json_path=args.input,
+        cdm_json_path=str(cdm_json_path),
         llm_client=client,
         model=args.model,
         config=config,
         log_progress=log_progress,
+        java_class_name=java_class,
     )
 
     err.write(f"\nAgent completed in {result.duration_seconds:.1f}s\n")
@@ -419,6 +452,9 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
     log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
 
     err.write("\n[2/3] Converting FpML to best CDM JSON...\n")
+    java_class = getattr(args, "java_class", None)
+    java_class = java_class.strip() if isinstance(java_class, str) and java_class.strip() else None
+
     java_result, mapping_result, cdm_json_path = generate_java_from_fpml(
         args.input,
         llm_client=client,
@@ -429,6 +465,7 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
         java_config=java_cfg,
         log_progress=log_progress,
         output_dir=args.output_dir,
+        java_class_name=java_class,
     )
 
     # Write mapping artifacts.
@@ -527,7 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
         "generate-java",
         help="Generate Java code from CDM JSON using agent loop (OpenRouter by default)",
     )
-    java_gen_parser.add_argument("input", help="CDM JSON file")
+    java_gen_parser.add_argument(
+        "input",
+        help="CDM JSON file path (prefer forward slashes on Git Bash, e.g. tmp/res/x.json)",
+    )
     java_gen_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
     java_gen_parser.add_argument("--model", default="minimax/minimax-m2.5", help="LLM model name (default: minimax/minimax-m2.5)")
     java_gen_parser.add_argument("--api-key", default=None, help="API key (for --provider openai: OpenAI key; else ignored)")
@@ -536,6 +576,12 @@ def build_parser() -> argparse.ArgumentParser:
     java_gen_parser.add_argument("--max-tool-calls", type=int, default=50, help="Max total tool calls (default: 50)")
     java_gen_parser.add_argument("--timeout", type=int, default=600, help="Agent timeout in seconds; increase for large CDM or slow models (default: 600)")
     java_gen_parser.add_argument("--trace-output", help="Write agent trace JSON to file")
+    java_gen_parser.add_argument(
+        "--java-class",
+        dest="java_class",
+        default=None,
+        help="Public Java class name and generated/<Name>.java (default: derived from CDM JSON filename stem)",
+    )
     java_gen_parser.add_argument("--verbose", "-v", action="store_true", help="Always show per-tool and LLM timing logs")
     java_gen_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-tool and LLM timing logs (default: show when stderr is a TTY)")
     java_gen_parser.set_defaults(func=cmd_generate_java)
@@ -616,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default="tmp",
         help="Directory for intermediate artifacts (best CDM, traces) (default: tmp)",
+    )
+    fpml_to_java_parser.add_argument(
+        "--java-class",
+        dest="java_class",
+        default=None,
+        help="Public Java class name and generated/<Name>.java (default: derived from FpML filename stem)",
     )
     fpml_to_java_parser.add_argument(
         "--trace-output",

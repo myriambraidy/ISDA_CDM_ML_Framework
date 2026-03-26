@@ -119,6 +119,15 @@ class RosettaValidatorIntegrationTests(unittest.TestCase):
         self.assertTrue(result.valid, f"Expected valid=True but got failures: {result.failures}")
         self.assertEqual(len(result.failures), 0)
 
+    def test_fx_option_fixture_passes_rosetta_validation(self):
+        cdm_path = FIXTURES / "expected" / "fx_option_cdm.json"
+        with open(cdm_path, "r", encoding="utf-8") as f:
+            cdm_data = json.load(f)
+
+        result = validate_cdm_rosetta(cdm_data)
+        self.assertTrue(result.valid, f"Expected valid=True but got failures: {result.failures}")
+        self.assertEqual(len(result.failures), 0)
+
     def test_empty_trade_returns_failures(self):
         result = validate_cdm_rosetta({"trade": {}})
 

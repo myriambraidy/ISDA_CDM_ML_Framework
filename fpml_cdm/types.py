@@ -62,6 +62,7 @@ class ValidationReport:
 # Discriminator for JSON and ``transform_to_cdm_v6`` dispatch; expand union types later.
 NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE = "fx_spot_forward_like"
 NORMALIZED_KIND_FX_SWAP = "fx_swap"
+NORMALIZED_KIND_FX_OPTION = "fx_option"
 
 
 @dataclass
@@ -262,7 +263,105 @@ class NormalizedFxSwap:
         )
 
 
-NormalizedFxTrade = Union[NormalizedFxForward, NormalizedFxSwap]
+@dataclass
+class NormalizedFxOption:
+    """Vanilla FX option economics (FpML ``fxOption``)."""
+
+    tradeDate: str
+    expiryDate: str
+    exerciseStyle: str
+    putCurrency: str
+    putAmount: float
+    callCurrency: str
+    callAmount: float
+    strikeRate: float
+    strikeCurrency1: str
+    strikeCurrency2: str
+    optionType: str
+    tradeIdentifiers: List[Dict[str, str]] = field(default_factory=list)
+    parties: List[Dict[str, Optional[str]]] = field(default_factory=list)
+    buyerPartyReference: Optional[str] = None
+    sellerPartyReference: Optional[str] = None
+    valueDate: Optional[str] = None
+    premiumAmount: Optional[float] = None
+    premiumCurrency: Optional[str] = None
+    premiumPaymentDate: Optional[str] = None
+    settlementType: str = "PHYSICAL"
+    sourceProduct: str = "fxOption"
+    normalized_kind: str = NORMALIZED_KIND_FX_OPTION
+    sourceNamespace: Optional[str] = None
+    sourceVersion: Optional[str] = None
+    llm_recovered_fields: List[str] = field(default_factory=list)
+    productTaxonomyQualifier: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "tradeDate": self.tradeDate,
+            "expiryDate": self.expiryDate,
+            "exerciseStyle": self.exerciseStyle,
+            "putCurrency": self.putCurrency,
+            "putAmount": self.putAmount,
+            "callCurrency": self.callCurrency,
+            "callAmount": self.callAmount,
+            "strikeRate": self.strikeRate,
+            "strikeCurrency1": self.strikeCurrency1,
+            "strikeCurrency2": self.strikeCurrency2,
+            "optionType": self.optionType,
+            "tradeIdentifiers": self.tradeIdentifiers,
+            "parties": self.parties,
+            "settlementType": self.settlementType,
+            "sourceProduct": self.sourceProduct,
+            "normalizedKind": self.normalized_kind,
+        }
+        if self.buyerPartyReference is not None:
+            data["buyerPartyReference"] = self.buyerPartyReference
+        if self.sellerPartyReference is not None:
+            data["sellerPartyReference"] = self.sellerPartyReference
+        if self.valueDate is not None:
+            data["valueDate"] = self.valueDate
+        if self.premiumAmount is not None:
+            data["premiumAmount"] = self.premiumAmount
+        if self.premiumCurrency is not None:
+            data["premiumCurrency"] = self.premiumCurrency
+        if self.premiumPaymentDate is not None:
+            data["premiumPaymentDate"] = self.premiumPaymentDate
+        if self.productTaxonomyQualifier is not None:
+            data["productTaxonomyQualifier"] = self.productTaxonomyQualifier
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NormalizedFxOption":
+        return cls(
+            tradeDate=data.get("tradeDate", ""),
+            expiryDate=data.get("expiryDate", ""),
+            exerciseStyle=data.get("exerciseStyle", "European"),
+            putCurrency=data.get("putCurrency", ""),
+            putAmount=float(data.get("putAmount")) if data.get("putAmount") is not None else 0.0,
+            callCurrency=data.get("callCurrency", ""),
+            callAmount=float(data.get("callAmount")) if data.get("callAmount") is not None else 0.0,
+            strikeRate=float(data.get("strikeRate")) if data.get("strikeRate") is not None else 0.0,
+            strikeCurrency1=data.get("strikeCurrency1", ""),
+            strikeCurrency2=data.get("strikeCurrency2", ""),
+            optionType=data.get("optionType", "Call"),
+            tradeIdentifiers=list(data.get("tradeIdentifiers", [])),
+            parties=list(data.get("parties", [])),
+            buyerPartyReference=data.get("buyerPartyReference"),
+            sellerPartyReference=data.get("sellerPartyReference"),
+            valueDate=data.get("valueDate"),
+            premiumAmount=float(data.get("premiumAmount")) if data.get("premiumAmount") is not None else None,
+            premiumCurrency=data.get("premiumCurrency"),
+            premiumPaymentDate=data.get("premiumPaymentDate"),
+            settlementType=data.get("settlementType", "PHYSICAL"),
+            sourceProduct=data.get("sourceProduct", "fxOption"),
+            normalized_kind=data.get("normalizedKind", NORMALIZED_KIND_FX_OPTION),
+            sourceNamespace=data.get("sourceNamespace"),
+            sourceVersion=data.get("sourceVersion"),
+            llm_recovered_fields=list(data.get("llm_recovered_fields", [])),
+            productTaxonomyQualifier=data.get("productTaxonomyQualifier"),
+        )
+
+
+NormalizedFxTrade = Union[NormalizedFxForward, NormalizedFxSwap, NormalizedFxOption]
 
 
 @dataclass

@@ -58,7 +58,7 @@
     },
     {
       "name": "get_java_template",
-      "description": "Get the boilerplate Java file template with main method and RosettaObjectMapper serialization. Contains IMPORTS_PLACEHOLDER and BUILDER_CODE_PLACEHOLDER markers for you to fill in.",
+      "description": "Get the boilerplate Java file template with main method and RosettaObjectMapper serialization. Contains IMPORTS_PLACEHOLDER and BUILDER_CODE_PLACEHOLDER markers for you to fill in. The public class name matches the active generation target (derived from the CDM JSON filename stem for this run).",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -76,7 +76,7 @@
           },
           "filename": {
             "type": "string",
-            "description": "Output filename (default: CdmTradeBuilder.java)"
+            "description": "Output filename (omit to use active target, e.g. MyTrade.java from CDM JSON stem)"
           }
         },
         "required": ["code"]
@@ -90,7 +90,7 @@
         "properties": {
           "filename": {
             "type": "string",
-            "description": "Filename to read (default: CdmTradeBuilder.java)"
+            "description": "Filename to read (omit to use active generation target)"
           }
         }
       }
@@ -111,7 +111,7 @@
           },
           "filename": {
             "type": "string",
-            "description": "Filename to patch (default: CdmTradeBuilder.java)"
+            "description": "Filename to patch (omit to use active generation target)"
           },
           "patches": {
             "type": "array",
@@ -136,7 +136,7 @@
         "properties": {
           "filename": {
             "type": "string",
-            "description": "Java source file to compile (default: CdmTradeBuilder.java)"
+            "description": "Java source file to compile (omit to use active generation target)"
           }
         }
       }
@@ -149,31 +149,13 @@
         "properties": {
           "class_name": {
             "type": "string",
-            "description": "Class name to run (default: CdmTradeBuilder)"
+            "description": "Class name to run (omit to use active generation target)"
           },
           "timeout": {
             "type": "integer",
             "description": "Max seconds to wait (default: 30)"
           }
         }
-      }
-    },
-    {
-      "name": "diff_json",
-      "description": "Deep-compare the original CDM JSON with the Java-produced output. Returns match percentage, list of differences (with paths, expected/actual values, and fix hints), and extra fields in actual output. This is your primary success metric.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "expected_json_path": {
-            "type": "string",
-            "description": "Path to the expected CDM JSON file"
-          },
-          "actual_json": {
-            "type": "string",
-            "description": "JSON string produced by the Java program"
-          }
-        },
-        "required": ["expected_json_path", "actual_json"]
       }
     },
     {
@@ -192,7 +174,7 @@
     },
     {
       "name": "finish",
-      "description": "Signal that the task is complete. Call this when the Java code compiles, runs, and produces output matching the input CDM JSON (or when max iterations are reached).",
+      "description": "Signal that the task is complete. Call this when the Java code compiles, runs, and produces reasonable CDM JSON on stdout (or when max iterations are reached).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -211,7 +193,7 @@
           },
           "match_percentage": {
             "type": "number",
-            "description": "Final diff match percentage (0-100)"
+            "description": "Optional self-reported quality score (0-100); not computed automatically"
           }
         },
         "required": ["status", "summary"]

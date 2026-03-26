@@ -17,7 +17,10 @@ class AdapterRegistryTests(unittest.TestCase):
         self.assertEqual(set(list_ruleset_adapter_ids()), set(SUPPORTED_FX_ADAPTER_IDS))
 
     def test_priority_order_forward_before_single_leg(self) -> None:
-        self.assertEqual(iter_fx_adapter_ids_by_priority(), ["fxForward", "fxSingleLeg", "fxSwap"])
+        self.assertEqual(
+            iter_fx_adapter_ids_by_priority(),
+            ["fxForward", "fxSingleLeg", "fxOption", "fxSwap"],
+        )
 
     def test_detect_prefers_lower_priority_adapter_id(self) -> None:
         trade = ET.fromstring(

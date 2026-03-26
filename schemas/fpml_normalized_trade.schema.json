@@ -8,6 +8,9 @@
     },
     {
       "$ref": "fpml_fx_swap_parsed.schema.json"
+    },
+    {
+      "$ref": "fpml_fx_option_parsed.schema.json"
     }
   ]
 }

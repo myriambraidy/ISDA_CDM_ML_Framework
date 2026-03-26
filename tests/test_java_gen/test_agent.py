@@ -18,15 +18,16 @@ from fpml_cdm.java_gen.agent import (
     TOOL_DISPATCH,
     SYSTEM_PROMPT,
 )
+from fpml_cdm.java_gen.tools import json_stem_to_java_class_name
 
 
 # ── tools.json validation ────────────────────────────────────────────
 
 class ToolsJsonTests(unittest.TestCase):
 
-    def test_loads_all_13_tools(self) -> None:
+    def test_loads_all_12_tools(self) -> None:
         specs = load_tool_specs()
-        self.assertEqual(len(specs), 13)
+        self.assertEqual(len(specs), 12)
 
     def test_each_spec_has_function_key(self) -> None:
         specs = load_tool_specs()
@@ -59,7 +60,6 @@ class ToolsJsonTests(unittest.TestCase):
             "patch_java_file",
             "compile_java",
             "run_java",
-            "diff_json",
             "validate_output",
             "finish",
         ]
@@ -133,6 +133,7 @@ class MockLLMClient:
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 CDM_FIXTURE = FIXTURES / "expected" / "fx_forward_cdm.json"
+CDM_FIXTURE_JAVA_CLASS = json_stem_to_java_class_name(CDM_FIXTURE.stem)
 
 
 class AgentLoopTests(unittest.TestCase):
@@ -319,8 +320,8 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(d["match_percentage"], 99.5)
         self.assertEqual(d["duration_seconds"], 45.68)
 
-    def test_deterministic_run_java_diff_after_compile_success(self) -> None:
-        """After compile_java success, agent injects run_java + diff_json; next turn finish -> success."""
+    def test_deterministic_run_java_after_compile_success(self) -> None:
+        """After compile_java success, agent injects run_java; next turn finish -> success."""
         responses = [
             MockMessage(tool_calls=[
                 MockToolCall(
@@ -336,7 +337,9 @@ class AgentLoopTests(unittest.TestCase):
                     id="call_finish",
                     function=MockFunctionCall(
                         name="finish",
-                        arguments='{"status": "success", "summary": "Done", "match_percentage": 100.0, "java_file": "generated/CdmTradeBuilder.java"}',
+                        arguments='{"status": "success", "summary": "Done", "match_percentage": 100.0, "java_file": "generated/'
+                        + CDM_FIXTURE_JAVA_CLASS
+                        + '.java"}',
                     ),
                 )
             ]),
@@ -347,7 +350,13 @@ class AgentLoopTests(unittest.TestCase):
 
         def mock_execute(fn_name: str, fn_args: object) -> str:
             if fn_name == "compile_java":
-                return json.dumps({"success": True, "class_file": "generated/CdmTradeBuilder.class", "warnings": []})
+                return json.dumps(
+                    {
+                        "success": True,
+                        "class_file": f"generated/{CDM_FIXTURE_JAVA_CLASS}.class",
+                        "warnings": [],
+                    }
+                )
             return real_execute(fn_name, fn_args)
 
         with patch.object(agent_module, "_execute_tool", mock_execute):
@@ -356,7 +365,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertTrue(result.success)
         tool_names = [t["tool"] for t in result.trace if t.get("type") == "tool_call"]
         self.assertIn("run_java", tool_names)
-        self.assertIn("diff_json", tool_names)
+        self.assertNotIn("diff_json", tool_names)
 
 
 JAR_PATH = Path("rosetta-validator/target/rosetta-validator-1.0.0.jar")
@@ -443,7 +452,7 @@ class RealLLMIntegrationTests(unittest.TestCase):
         self.assertIn("compile_java", tool_names_used,
                        "Agent should attempt compilation")
 
-        java_file = GENERATED_DIR / "CdmTradeBuilder.java"
+        java_file = GENERATED_DIR / f"{CDM_FIXTURE_JAVA_CLASS}.java"
         self.assertTrue(
             java_file.exists() or result.java_file,
             "A Java file should be produced",

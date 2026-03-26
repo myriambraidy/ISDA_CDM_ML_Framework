@@ -7,9 +7,11 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from .adapters.registry import SUPPORTED_FX_ADAPTER_IDS, detect_fx_adapter_product, get_fx_adapter_spec
 from .types import (
+    NORMALIZED_KIND_FX_OPTION,
     NORMALIZED_KIND_FX_SWAP,
     ErrorCode,
     NormalizedFxForward,
+    NormalizedFxOption,
     NormalizedFxSwap,
     ParserError,
     ValidationIssue,
@@ -158,7 +160,10 @@ def parse_fpml_fx(
     xml_path: str,
     strict: bool = True,
     recovery_mode: bool = False,
-) -> "NormalizedFxForward | NormalizedFxSwap | Tuple[NormalizedFxForward | NormalizedFxSwap, List[ValidationIssue]]":
+) -> (
+    "NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption "
+    "| Tuple[NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption, List[ValidationIssue]]"
+):
     xml_file = Path(xml_path)
     if not xml_file.exists():
         raise ParserError(
@@ -191,7 +196,10 @@ def parse_fpml_xml(
     xml_content: str,
     strict: bool = True,
     recovery_mode: bool = False,
-) -> "NormalizedFxForward | NormalizedFxSwap | Tuple[NormalizedFxForward | NormalizedFxSwap, List[ValidationIssue]]":
+) -> (
+    "NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption "
+    "| Tuple[NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption, List[ValidationIssue]]"
+):
     try:
         root = ET.fromstring(xml_content)
     except ET.ParseError as exc:
@@ -211,7 +219,10 @@ def parse_fpml_root(
     root: ET.Element,
     strict: bool = True,
     recovery_mode: bool = False,
-) -> "NormalizedFxForward | NormalizedFxSwap | Tuple[NormalizedFxForward | NormalizedFxSwap, List[ValidationIssue]]":
+) -> (
+    "NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption "
+    "| Tuple[NormalizedFxForward | NormalizedFxSwap | NormalizedFxOption, List[ValidationIssue]]"
+):
     issues: List[ValidationIssue] = []
 
     source_namespace = _namespace(root.tag)
@@ -321,6 +332,34 @@ def parse_fpml_root(
             farCurrency2ReceiverPartyReference=product_fields.get("farCurrency2ReceiverPartyReference"),
             buyerPartyReference=buyer_party_reference,
             sellerPartyReference=seller_party_reference,
+            sourceProduct=source_product,
+            normalized_kind=normalized_kind,
+            sourceNamespace=source_namespace,
+            sourceVersion=source_version,
+        )
+    elif normalized_kind == NORMALIZED_KIND_FX_OPTION:
+        st_opt = product_fields.get("settlementType") or "PHYSICAL"
+        model = NormalizedFxOption(
+            tradeDate=trade_date or "",
+            expiryDate=product_fields.get("expiryDate") or "",
+            exerciseStyle=product_fields.get("exerciseStyle") or "European",
+            putCurrency=product_fields.get("putCurrency") or "",
+            putAmount=float(product_fields.get("putAmount") or 0.0),
+            callCurrency=product_fields.get("callCurrency") or "",
+            callAmount=float(product_fields.get("callAmount") or 0.0),
+            strikeRate=float(product_fields.get("strikeRate") or 0.0),
+            strikeCurrency1=product_fields.get("strikeCurrency1") or "",
+            strikeCurrency2=product_fields.get("strikeCurrency2") or "",
+            optionType=product_fields.get("optionType") or "Call",
+            tradeIdentifiers=trade_identifiers,
+            parties=parties,
+            buyerPartyReference=buyer_party_reference,
+            sellerPartyReference=seller_party_reference,
+            valueDate=product_fields.get("valueDate"),
+            premiumAmount=product_fields.get("premiumAmount"),
+            premiumCurrency=product_fields.get("premiumCurrency"),
+            premiumPaymentDate=product_fields.get("premiumPaymentDate"),
+            settlementType=st_opt,
             sourceProduct=source_product,
             normalized_kind=normalized_kind,
             sourceNamespace=source_namespace,

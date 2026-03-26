@@ -7,11 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from .cdm_official_schema import get_trade_schema_validator
 from .parser import parse_fpml_fx
 from .types import (
+    NORMALIZED_KIND_FX_OPTION,
     NORMALIZED_KIND_FX_SPOT_FORWARD_LIKE,
     NORMALIZED_KIND_FX_SWAP,
     ErrorCode,
     MappingScore,
     NormalizedFxForward,
+    NormalizedFxOption,
     NormalizedFxSwap,
     NormalizedFxTrade,
     ParserError,
@@ -69,6 +71,8 @@ def normalized_parsed_schema_for_kind(normalized_kind: str) -> str:
         return "fpml_fx_forward_parsed.schema.json"
     if normalized_kind == NORMALIZED_KIND_FX_SWAP:
         return "fpml_fx_swap_parsed.schema.json"
+    if normalized_kind == NORMALIZED_KIND_FX_OPTION:
+        return "fpml_fx_option_parsed.schema.json"
     raise KeyError(normalized_kind)
 
 
@@ -296,6 +300,19 @@ def _semantic_validation(model: NormalizedFxTrade, cdm_data: Dict[str, Any]) -> 
                 MappingScore(),
             )
         return _semantic_validation_fx_swap(model, cdm_data)
+    if kind == NORMALIZED_KIND_FX_OPTION:
+        if not isinstance(model, NormalizedFxOption):
+            return (
+                [
+                    ValidationIssue(
+                        code=ErrorCode.SEMANTIC_VALIDATION_FAILED.value,
+                        message=f"Expected NormalizedFxOption for {kind!r}, got {type(model).__name__}",
+                        path="normalized",
+                    )
+                ],
+                MappingScore(),
+            )
+        return _semantic_validation_fx_option(model, cdm_data)
     return (
         [
             ValidationIssue(
@@ -416,6 +433,95 @@ def _semantic_validation_fx_swap(
                 far_qty[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.farCurrency2,
                 "Far leg currency2 mismatch",
                 "trade.tradeLot[0].priceQuantity[1].quantity[1].value.unit.currency.value",
+            )
+
+    accuracy = (checks_matched / checks_total) * 100 if checks_total else 0.0
+    return (
+        issues,
+        MappingScore(total_fields=checks_total, matched_fields=checks_matched, accuracy_percent=accuracy),
+    )
+
+
+def _semantic_validation_fx_option(
+    model: NormalizedFxOption, cdm_data: Dict[str, Any]
+) -> Tuple[List[ValidationIssue], MappingScore]:
+    issues: List[ValidationIssue] = []
+    checks_total = 0
+    checks_matched = 0
+
+    def check(condition: bool, message: str, path: str) -> None:
+        nonlocal checks_total, checks_matched
+        checks_total += 1
+        if condition:
+            checks_matched += 1
+            return
+        issues.append(
+            ValidationIssue(
+                code=ErrorCode.SEMANTIC_VALIDATION_FAILED.value,
+                message=message,
+                path=path,
+            )
+        )
+
+    trade = cdm_data.get("trade", {})
+    check(trade.get("tradeDate", {}).get("value") == model.tradeDate, "Trade date mismatch", "trade.tradeDate.value")
+
+    payouts = trade.get("product", {}).get("economicTerms", {}).get("payout", []) or []
+    check(len(payouts) >= 1, "FX option must emit at least one payout", "trade.product.economicTerms.payout")
+    op: Dict[str, Any] = {}
+    if payouts:
+        check("OptionPayout" in payouts[0], "First payout must be OptionPayout", "trade.product.economicTerms.payout[0]")
+        op = (payouts[0] or {}).get("OptionPayout", {}) or {}
+
+    et = op.get("exerciseTerms", {})
+    exp_dates = et.get("expirationDate") or []
+    cdm_exp = None
+    if exp_dates:
+        cdm_exp = (exp_dates[0].get("adjustableDate") or {}).get("unadjustedDate")
+    check(cdm_exp == model.expiryDate, "Expiry date mismatch", "trade.product.economicTerms.payout[0].OptionPayout.exerciseTerms.expirationDate")
+
+    check(op.get("optionType") == model.optionType, "Option type mismatch", "trade.product.economicTerms.payout[0].OptionPayout.optionType")
+
+    sp = (op.get("strike") or {}).get("strikePrice", {})
+    check(
+        _float_equal(model.strikeRate, float(sp.get("value")) if sp.get("value") is not None else None, 0.0001),
+        "Strike rate mismatch",
+        "trade.product.economicTerms.payout[0].OptionPayout.strike.strikePrice.value",
+    )
+
+    bs = op.get("buyerSeller", {})
+    counterparties: Dict[str, str] = {}
+    for cp in trade.get("counterparty", []):
+        ref = cp.get("partyReference", {})
+        key = ref.get("externalReference") or ref.get("globalReference")
+        if key:
+            counterparties[key] = cp.get("role", "")
+    if model.buyerPartyReference:
+        check(
+            bs.get("buyer") == counterparties.get(model.buyerPartyReference, "Party1"),
+            "Buyer role mismatch",
+            "trade.product.economicTerms.payout[0].OptionPayout.buyerSeller.buyer",
+        )
+    if model.sellerPartyReference:
+        check(
+            bs.get("seller") == counterparties.get(model.sellerPartyReference, "Party2"),
+            "Seller role mismatch",
+            "trade.product.economicTerms.payout[0].OptionPayout.buyerSeller.seller",
+        )
+
+    pqs = ((trade.get("tradeLot", [{}]) or [{}])[0].get("priceQuantity", []) or [])
+    if pqs:
+        qtys = pqs[0].get("quantity", []) or []
+        if len(qtys) >= 2:
+            check(
+                qtys[0].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.putCurrency,
+                "Put currency mismatch",
+                "trade.tradeLot[0].priceQuantity[0].quantity[0]",
+            )
+            check(
+                qtys[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.callCurrency,
+                "Call currency mismatch",
+                "trade.tradeLot[0].priceQuantity[0].quantity[1]",
             )
 
     accuracy = (checks_matched / checks_total) * 100 if checks_total else 0.0
