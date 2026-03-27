@@ -40,6 +40,42 @@ make corpus-check       # batch conversion check, output → data/corpus/reports
 make corpus-check-fx    # FX derivatives only, output → data/corpus/reports/latest_fx.json
 ```
 
+## Java Environment (rosetta-validator/generated/)
+
+`rosetta-validator/generated/*.java` compilation/execution uses:
+- `rosetta-validator/target/rosetta-validator-1.0.0.jar`
+- `rosetta-validator/generated/` on classpath
+
+Windows quick checks:
+```powershell
+java -version
+javac -version
+mvn -version
+```
+
+Build required jar:
+```powershell
+cd rosetta-validator
+mvn package -DskipTests
+```
+
+Compile + run one generated class manually:
+```powershell
+javac -cp "C:\path\to\fpml_isdacm\rosetta-validator\target\rosetta-validator-1.0.0.jar;C:\path\to\fpml_isdacm\rosetta-validator\generated" -d "C:\path\to\fpml_isdacm\rosetta-validator\generated" "C:\path\to\fpml_isdacm\rosetta-validator\generated\BondOptionOutput.java"
+java -cp "C:\path\to\fpml_isdacm\rosetta-validator\target\rosetta-validator-1.0.0.jar;C:\path\to\fpml_isdacm\rosetta-validator\generated" BondOptionOutput
+```
+
+Troubleshooting:
+- `javac not found`: JDK is missing (JRE alone is insufficient) or PATH is wrong.
+- jar missing: build in `rosetta-validator` with Maven.
+- wrong classpath separator: use `;` on Windows, `:` on Linux/macOS.
+- `public class X` mismatch: filename must be `X.java`.
+- Git Bash path escapes (`\r`, `\t`): use forward slashes or quote paths.
+
+Helper scripts:
+- `scripts/java_env_check.ps1` (env + optional jar build)
+- `scripts/compile_generated.ps1` (compile/run `rosetta-validator/generated/<Class>.java`)
+
 ## Architecture
 
 The pipeline has four distinct stages, each in its own module:

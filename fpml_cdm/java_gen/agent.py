@@ -132,7 +132,7 @@ def _agent_result_exhausted(
     """Build result when the main loop ends without an explicit finish tool."""
     match_pct, java_path, summary = _partial_result_from_trace(trace, reason_summary)
     if _trace_has_successful_run_java(trace):
-        active_rel = f"generated/{get_active_java_filename()}"
+        active_rel = f"rosetta-validator/generated/{get_active_java_filename()}"
         jf = java_path or active_rel
         return AgentResult(
             success=True,
@@ -324,7 +324,7 @@ def run_agent(
 ) -> AgentResult:
     """Main agent loop: LLM + tools until finish or limits reached.
 
-    Output class and ``generated/<Name>.java`` are derived from the CDM JSON filename
+    Output class and ``rosetta-validator/generated/<Name>.java`` are derived from the CDM JSON filename
     stem unless ``java_class_name`` is set (e.g. FpML pipeline passes the FpML stem).
     """
     set_java_generation_target(cdm_json_path=cdm_json_path, class_name=java_class_name)
@@ -382,7 +382,7 @@ def _run_agent_impl(
                 f"Generate Java code that builds the CDM trade defined in: {cdm_json_path}\n"
                 f"Use that exact path when calling tools (especially inspect_cdm_json).\n"
                 f"Use a single public class named `{active_cls}` in file `{active_file}` "
-                f"under the repository `generated/` directory (filename must match the class name).\n"
+                f"under the repository `rosetta-validator/generated/` directory (filename must match the class name).\n"
                 f"The code must compile against the CDM classpath and print valid CDM trade JSON "
                 f"to stdout when executed (use validate_output if unsure)."
             ),
@@ -546,7 +546,7 @@ def _run_agent_impl(
                     "Java compiled and ran successfully (run_java exit 0). "
                     "Call `finish` now with status \"success\", a short summary, "
                     "and `java_file` set to the generated `.java` path "
-                    "(from the last write_java_file / active target under generated/)."
+                    "(from the last write_java_file / active target under rosetta-validator/generated/)."
                 ),
             })
 

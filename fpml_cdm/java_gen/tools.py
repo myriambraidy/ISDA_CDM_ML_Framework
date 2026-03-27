@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Union
 from .schema_index import SchemaIndex, _camel_to_screaming_snake
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-GENERATED_DIR = PROJECT_ROOT / "generated"
+GENERATED_DIR = PROJECT_ROOT / "rosetta-validator" / "generated"
 TEMPLATE_DIR = Path(__file__).resolve().parent / "java_templates"
 
 _idx: Optional[SchemaIndex] = None
@@ -467,7 +467,7 @@ def write_java_file(
     code: str,
     filename: Optional[str] = None,
 ) -> Dict[str, object]:
-    """Write complete Java source code to the generated/ directory."""
+    """Write complete Java source code to rosetta-validator/generated/."""
     fn = _resolve_java_filename(filename)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     path = GENERATED_DIR / fn
