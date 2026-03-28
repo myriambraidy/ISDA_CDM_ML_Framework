@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "inspect_cdm_json",
-      "description": "Analyze CDM JSON structure. Returns a tree of all nodes with their JSON paths, inferred CDM types, leaf values, array indicators, a summary of all types and enums used, a type_registry with pre-resolved Java imports/builders for every type, and java_type_warnings for fields where the Java type differs from the schema type (e.g. date fields). Call this FIRST — use the type_registry directly instead of calling resolve_java_type for each type.",
+      "description": "Analyze CDM JSON structure. Returns: tree, enums_used, type_summary, type_registry (Java imports/builders per schema ref), java_type_warnings (date etc.), well_known_imports (common CDM/JDK types to import), reference_pattern_total + reference_patterns_sample + reference_api_note when globalReference/externalReference appear (use setGlobalReference/setExternalReference/setReference; never setAddress). Call FIRST — use type_registry directly instead of resolve_java_type for each type.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -16,7 +16,7 @@
     },
     {
       "name": "lookup_cdm_schema",
-      "description": "Look up the JSON Schema definition for a CDM type. Returns all properties with their types, $ref targets, required flags, Java class names, and setter method hints. Use this to understand what fields a builder needs and what types they accept.",
+      "description": "Look up the JSON Schema definition for a CDM type. Returns properties with types, $ref, required flags, Java classes, setter_hint, optional setter_note (e.g. JSON address → setReference, not setAddress), and builder_reference_note on ReferenceWithMeta* types.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -44,7 +44,7 @@
     },
     {
       "name": "list_enum_values",
-      "description": "List all valid values for a CDM enum type, with their Java constant representations. Use this whenever you encounter a string value that represents an enum (e.g. 'Party1', 'Physical', 'Buyer').",
+      "description": "List enum JSON values with java_constant names (uses schema oneOf titles when present; otherwise sanitized identifiers). May include enum_constant_warning for punctuation-heavy values — verify against JAR if compile fails.",
       "parameters": {
         "type": "object",
         "properties": {

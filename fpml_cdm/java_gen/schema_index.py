@@ -11,20 +11,37 @@ from typing import Dict, List, Optional, Tuple
 SCHEMA_DIR = Path(__file__).resolve().parent.parent.parent / "schemas" / "jsonschema"
 
 
-def _camel_to_screaming_snake(name: str) -> str:
-    """CamelCase / mixedCase → SCREAMING_SNAKE_CASE.
+def _enum_oneof_json_to_java_title_map(schema: dict) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    one_of = schema.get("oneOf")
+    if not isinstance(one_of, list):
+        return out
+    for branch in one_of:
+        if not isinstance(branch, dict):
+            continue
+        title = branch.get("title")
+        ev = branch.get("enum")
+        if not isinstance(title, str) or not isinstance(ev, list) or len(ev) != 1:
+            continue
+        v = ev[0]
+        if isinstance(v, str):
+            out[v] = title
+    return out
 
-    Examples:
-        Party1   → PARTY_1
-        Physical → PHYSICAL
-        ExchangeRate → EXCHANGE_RATE
-        Party2   → PARTY_2
-    """
-    result = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+
+def _camel_to_screaming_snake(name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9]+", "_", name)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    if not sanitized:
+        return ""
+    result = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", sanitized)
     result = re.sub(r"([a-z])([A-Z])", r"\1_\2", result)
     result = re.sub(r"([A-Za-z])(\d)", r"\1_\2", result)
     result = re.sub(r"(\d)([A-Za-z])", r"\1_\2", result)
-    return result.upper()
+    result = result.upper()
+    if result[0].isdigit():
+        result = "_" + result
+    return result
 
 
 class SchemaIndex:
@@ -185,14 +202,22 @@ class SchemaIndex:
             return []
         return self.enum_values(filename)
 
-    def enum_java_constants(self, schema_ref: str) -> List[Dict[str, str]]:
-        """Return enum values with their likely Java constant names.
+    def enum_json_value_java_identifier(self, schema_ref: str, json_value: str) -> str:
+        data = self._load_schema_file(schema_ref)
+        if data is None:
+            return _camel_to_screaming_snake(json_value)
+        title_map = _enum_oneof_json_to_java_title_map(data)
+        if json_value in title_map:
+            return _camel_to_screaming_snake(title_map[json_value])
+        return _camel_to_screaming_snake(json_value)
 
-        Each entry: {"json_value": "Party1", "java_constant": "PARTY_1"}
-        """
+    def enum_java_constants(self, schema_ref: str) -> List[Dict[str, str]]:
         values = self.enum_values(schema_ref)
         return [
-            {"json_value": v, "java_constant": _camel_to_screaming_snake(v)}
+            {
+                "json_value": v,
+                "java_constant": self.enum_json_value_java_identifier(schema_ref, v),
+            }
             for v in values
         ]
 

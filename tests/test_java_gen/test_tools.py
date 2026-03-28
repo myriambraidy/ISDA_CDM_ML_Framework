@@ -110,6 +110,14 @@ class LookupCdmSchemaTests(unittest.TestCase):
             result["properties"]["tradeDate"]["setter_hint"], "setTradeDate"
         )
 
+    def test_reference_with_meta_address_uses_set_reference(self) -> None:
+        result = lookup_cdm_schema("ReferenceWithMetaNonNegativeQuantitySchedule")
+        self.assertNotIn("error", result)
+        addr = result["properties"]["address"]
+        self.assertEqual(addr["setter_hint"], "setReference")
+        self.assertIn("setter_note", addr)
+        self.assertIn("builder_reference_note", result)
+
     def test_settlement_payout_required(self) -> None:
         result = lookup_cdm_schema("SettlementPayout")
         self.assertIn("underlier", result["required_fields"])
@@ -203,6 +211,13 @@ class ListEnumValuesTests(unittest.TestCase):
         json_vals = {v["json_value"] for v in result["values"]}
         self.assertIn("Payer", json_vals)
         self.assertIn("Receiver", json_vals)
+
+    def test_day_count_fraction_act_360_constant(self) -> None:
+        result = list_enum_values("DayCountFractionEnum")
+        self.assertNotIn("error", result)
+        by_json = {v["json_value"]: v["java_constant"] for v in result["values"]}
+        self.assertEqual(by_json["ACT/360"], "DayCountFractionEnum.ACT_360")
+        self.assertIn("enum_constant_warning", result)
 
 
 # ── json_stem_to_java_class_name ─────────────────────────────────────
@@ -657,6 +672,19 @@ class InspectTypeRegistryTests(unittest.TestCase):
         w = date_warnings[0]
         self.assertIn("FieldWithMetaDate", w["actual_java_class"])
         self.assertIn("Date.of", w["java_usage"])
+
+    def test_well_known_imports(self) -> None:
+        wk = self.result["well_known_imports"]
+        self.assertIsInstance(wk, dict)
+        self.assertEqual(
+            wk["InterestRatePayout"], "cdm.product.asset.InterestRatePayout"
+        )
+        self.assertIn("well_known_imports_note", self.result)
+
+    def test_reference_patterns(self) -> None:
+        self.assertGreater(self.result["reference_pattern_total"], 0)
+        self.assertIsInstance(self.result["reference_patterns_sample"], list)
+        self.assertIsNotNone(self.result["reference_api_note"])
 
 
 # ── patch_java_file: no-op guard & batch mode ────────────────────────

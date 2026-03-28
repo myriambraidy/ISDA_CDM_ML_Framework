@@ -6,7 +6,7 @@ import json
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -182,6 +182,24 @@ class AgentConfig:
     match_threshold: float = 95.0
 
 
+def scale_java_gen_config_for_node_count(config: AgentConfig, total_nodes: int) -> AgentConfig:
+    if total_nodes > 400:
+        return replace(
+            config,
+            max_iterations=max(config.max_iterations, 50),
+            max_tool_calls=max(config.max_tool_calls, 150),
+            timeout_seconds=max(config.timeout_seconds, 900),
+        )
+    if total_nodes > 150:
+        return replace(
+            config,
+            max_iterations=max(config.max_iterations, 35),
+            max_tool_calls=max(config.max_tool_calls, 100),
+            timeout_seconds=max(config.timeout_seconds, 600),
+        )
+    return config
+
+
 @dataclass
 class AgentResult:
     success: bool
@@ -218,11 +236,16 @@ Follow this workflow:
    - The response includes a **type_registry** with pre-resolved Java imports, builder
      entries, and package names for EVERY type found. Use this directly — do NOT call
      `resolve_java_type` for types already in the registry.
+   - **well_known_imports** lists common CDM/JDK types to import when building (e.g.
+     InterestRatePayout, MetaFields, DayCountFractionEnum).
+   - **reference_api_note** / **reference_patterns_sample** describe document references;
+     use setGlobalReference / setExternalReference / setReference — never setAddress.
    - The response also includes **java_type_warnings** listing fields where the actual
      Java type differs from the JSON schema type. PAY CLOSE ATTENTION to these.
 2. Call `get_java_template` for the boilerplate.
 3. For complex nested types, call `lookup_cdm_schema` to get property names and setter
-   hints. Batch multiple lookups in a single turn when possible.
+   hints (and setter_note when present). For JSON property `address` on ReferenceWithMeta*
+   types, setter_hint is setReference, not setAddress. Batch multiple lookups in one turn.
 4. For enum values, call `list_enum_values` to get the correct Java constants.
 5. Generate the complete Java code and call `write_java_file`.
 6. Call `compile_java` — if errors, fix them using `patch_java_file` and recompile.
@@ -253,6 +276,26 @@ When the CDM has an `underlier` (e.g. FX forward with Asset.Cash and a currency)
 the full underlier structure from schema (Underlier → Observable → Asset → Cash → identifier),
 not `ReferenceWithMetaObservable.builder().setValue(null)`. Use `lookup_cdm_schema` for Underlier,
 Observable, Asset, Cash as needed and construct the full builder chain so the serialized JSON matches.
+
+## CRITICAL: Nested builders — close every .builder() with .build()
+Wrong (PartyIdentifier not closed before Party.setMeta — javac reports ')' expected):
+Party.builder()
+    .addPartyId(PartyIdentifier.builder()
+        .setIdentifier(FieldWithMetaString.builder().setValue("x").build())
+    .setMeta(...)
+
+Right:
+Party.builder()
+    .addPartyId(
+        PartyIdentifier.builder()
+            .setIdentifier(FieldWithMetaString.builder().setValue("x").build())
+            .build()
+    )
+    .setMeta(...)
+    .build()
+
+After every nested Type.builder() used inside add*(...), call .build() on that nested builder
+before the parent's next setter.
 
 ## Efficiency Rules
 - **First 1–2 turns**: After `inspect_cdm_json` and `get_java_template`, call ALL
@@ -351,6 +394,20 @@ def _run_agent_impl(
     config = config or AgentConfig()
     if log_progress is None:
         log_progress = sys.stderr.isatty()
+    try:
+        preflight = inspect_cdm_json(cdm_json_path)
+        total_nodes_raw = preflight.get("total_nodes", 0)
+        if isinstance(total_nodes_raw, int):
+            config = scale_java_gen_config_for_node_count(config, total_nodes_raw)
+            if log_progress:
+                sys.stderr.write(
+                    f"  [java_gen] total_nodes={total_nodes_raw} -> "
+                    f"max_iterations={config.max_iterations} "
+                    f"max_tool_calls={config.max_tool_calls} "
+                    f"timeout_seconds={config.timeout_seconds}\n"
+                )
+    except Exception:
+        pass
     tool_specs = load_tool_specs()
     start_time = time.time()
     trace: List[Dict[str, object]] = []

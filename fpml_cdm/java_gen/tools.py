@@ -14,7 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from .schema_index import SchemaIndex, _camel_to_screaming_snake
+from .schema_index import SchemaIndex
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 GENERATED_DIR = PROJECT_ROOT / "rosetta-validator" / "generated"
@@ -105,6 +105,35 @@ def _resolve_java_class_name(class_name: Optional[str]) -> str:
 
 # Known schema-to-Java type mismatches.
 # The JSON schemas represent dates as strings, but CDM Java uses typed date classes.
+WELL_KNOWN_IMPORTS: Dict[str, str] = {
+    "MetaFields": "com.rosetta.model.metafields.MetaFields",
+    "FieldWithMetaDate": "com.rosetta.model.metafields.FieldWithMetaDate",
+    "FieldWithMetaString": "com.rosetta.model.metafields.FieldWithMetaString",
+    "ReferenceWithMetaString": "com.rosetta.model.metafields.ReferenceWithMetaString",
+    "Date": "com.rosetta.model.lib.records.Date",
+    "Reference": "com.rosetta.model.lib.meta.Reference",
+    "BigDecimal": "java.math.BigDecimal",
+    "BusinessCenterEnum": "cdm.base.datetime.BusinessCenterEnum",
+    "BusinessDayConventionEnum": "cdm.base.datetime.BusinessDayConventionEnum",
+    "DayTypeEnum": "cdm.base.datetime.DayTypeEnum",
+    "RollConventionEnum": "cdm.base.datetime.RollConventionEnum",
+    "PeriodEnum": "cdm.base.datetime.PeriodEnum",
+    "PeriodExtendedEnum": "cdm.base.datetime.PeriodExtendedEnum",
+    "DayCountFractionEnum": "cdm.base.datetime.daycount.DayCountFractionEnum",
+    "InterestRatePayout": "cdm.product.asset.InterestRatePayout",
+    "RateSpecification": "cdm.product.asset.RateSpecification",
+    "FloatingRateSpecification": "cdm.product.asset.FloatingRateSpecification",
+    "FixedRateSpecification": "cdm.product.asset.FixedRateSpecification",
+    "PriceTypeEnum": "cdm.observable.asset.PriceTypeEnum",
+    "AssetClassEnum": "cdm.base.staticdata.asset.common.AssetClassEnum",
+    "AssetIdTypeEnum": "cdm.base.staticdata.asset.common.AssetIdTypeEnum",
+    "PartyIdentifierTypeEnum": "cdm.base.staticdata.party.PartyIdentifierTypeEnum",
+    "FloatingRateIndexEnum": "cdm.base.staticdata.asset.rates.FloatingRateIndexEnum",
+    "CounterpartyRoleEnum": "cdm.base.staticdata.party.CounterpartyRoleEnum",
+}
+
+_REFERENCE_SCHEMA = "com-rosetta-model-lib-meta-Reference.schema.json"
+
 JAVA_TYPE_OVERRIDES: Dict[str, Dict[str, str]] = {
     "tradeDate": {
         "java_class": "com.rosetta.model.metafields.FieldWithMetaDate",
@@ -136,6 +165,26 @@ def _get_index() -> SchemaIndex:
     return _idx
 
 
+def _setter_hint_for_property(
+    prop_name: str,
+    *,
+    is_array: bool,
+    ref: Optional[str],
+) -> tuple[str, Optional[str]]:
+    if is_array:
+        return (f"add{prop_name[0].upper()}{prop_name[1:]}", None)
+    if prop_name == "address" and ref == _REFERENCE_SCHEMA:
+        return (
+            "setReference",
+            "JSON property address maps to setReference(Reference); there is no setAddress.",
+        )
+    if prop_name == "globalReference":
+        return ("setGlobalReference", None)
+    if prop_name == "externalReference":
+        return ("setExternalReference", None)
+    return (f"set{prop_name[0].upper()}{prop_name[1:]}", None)
+
+
 # ── Tool 1: inspect_cdm_json ─────────────────────────────────────────
 
 def inspect_cdm_json(json_path: str) -> Dict[str, object]:
@@ -150,6 +199,9 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
     type_counts: Dict[str, int] = defaultdict(int)
 
     trade_schema_file = "cdm-event-common-Trade.schema.json"
+    ref_patterns_sample: List[Dict[str, object]] = []
+    reference_pattern_total: Dict[str, int] = {"n": 0}
+    max_ref_samples = 40
 
     def _resolve_prop(parent_schema_file: str, prop_name: str) -> Optional[str]:
         """Get the $ref schema filename for a property of a parent type."""
@@ -178,6 +230,15 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
         schema_file: Optional[str],
     ) -> None:
         if isinstance(node, dict):
+            present_keys = [
+                k for k in ("globalReference", "externalReference") if k in node
+            ]
+            if present_keys:
+                reference_pattern_total["n"] += 1
+                if len(ref_patterns_sample) < max_ref_samples:
+                    ref_patterns_sample.append(
+                        {"json_path": path, "keys": present_keys}
+                    )
             for key, child in node.items():
                 child_path = f"{path}.{key}"
                 child_ref: Optional[str] = None
@@ -298,6 +359,11 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
                 "note": override["note"],
             })
 
+    ref_note = (
+        "For ReferenceWithMeta* builders use setGlobalReference(String), "
+        "setExternalReference(String), and setReference(Reference) for JSON property address. "
+        "Do not use setAddress()."
+    )
     return {
         "root_type": "Trade",
         "total_nodes": len(tree),
@@ -306,6 +372,14 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
         "type_summary": dict(type_counts),
         "type_registry": type_registry,
         "java_type_warnings": java_type_warnings,
+        "well_known_imports": WELL_KNOWN_IMPORTS,
+        "well_known_imports_note": (
+            "Consider imports for these symbols when building trades; not all appear as explicit "
+            "values in the JSON instance."
+        ),
+        "reference_pattern_total": reference_pattern_total["n"],
+        "reference_patterns_sample": ref_patterns_sample,
+        "reference_api_note": ref_note if reference_pattern_total["n"] else None,
     }
 
 
@@ -337,12 +411,11 @@ def lookup_cdm_schema(type_name: str) -> Dict[str, object]:
 
         prop_java = idx.schema_ref_to_java_class(ref) if ref else None
 
-        if is_array:
-            setter = f"add{prop_name[0].upper()}{prop_name[1:]}"
-        else:
-            setter = f"set{prop_name[0].upper()}{prop_name[1:]}"
+        setter, setter_note = _setter_hint_for_property(
+            prop_name, is_array=is_array, ref=ref
+        )
 
-        properties[prop_name] = {
+        entry: Dict[str, object] = {
             "type": prop_def.get("type", "object"),
             "ref": ref,
             "java_class": prop_java,
@@ -351,9 +424,13 @@ def lookup_cdm_schema(type_name: str) -> Dict[str, object]:
             "setter_hint": setter,
             "description": prop_def.get("description", ""),
         }
+        if setter_note is not None:
+            entry["setter_note"] = setter_note
+        properties[prop_name] = entry
 
-    return {
-        "type_name": schema.get("title", type_name),
+    resolved_title = str(schema.get("title", type_name))
+    result: Dict[str, object] = {
+        "type_name": resolved_title,
         "schema_file": schema_file,
         "java_class": fq,
         "java_package": pkg,
@@ -361,6 +438,12 @@ def lookup_cdm_schema(type_name: str) -> Dict[str, object]:
         "properties": properties,
         "required_fields": sorted(required_set),
     }
+    if "ReferenceWithMeta" in resolved_title or "ReferenceWithMeta" in type_name:
+        result["builder_reference_note"] = (
+            "ReferenceWithMeta* builders: use setGlobalReference, setExternalReference, "
+            "or setReference(Reference) for JSON address. There is no setAddress()."
+        )
+    return result
 
 
 # ── Tool 3: resolve_java_type ────────────────────────────────────────
@@ -399,21 +482,28 @@ def list_enum_values(enum_name: str) -> Dict[str, object]:
     fq, pkg, simple = idx.java_class_parts(schema_file)
     raw_values = idx.enum_values(schema_file)
 
-    values = []
+    values: List[Dict[str, str]] = []
     for val in raw_values:
-        java_const = _camel_to_screaming_snake(val)
+        java_ident = idx.enum_json_value_java_identifier(schema_file, val)
         values.append({
             "json_value": val,
-            "java_constant": f"{simple}.{java_const}",
+            "java_constant": f"{simple}.{java_ident}",
         })
 
-    return {
+    has_special = any(re.search(r"[^a-zA-Z0-9]", v["json_value"]) for v in values)
+    out: Dict[str, object] = {
         "enum_name": enum_name,
         "java_class": fq,
         "java_package": pkg,
         "import_statement": f"import {fq};",
         "values": values,
     }
+    if has_special:
+        out["enum_constant_warning"] = (
+            "Some JSON enum values contain punctuation; constants use schema oneOf titles or "
+            "sanitized names. If compilation fails, verify against the shaded CDM JAR."
+        )
+    return out
 
 
 # ── Tool 5: get_java_template ────────────────────────────────────────

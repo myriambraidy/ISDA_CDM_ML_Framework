@@ -15,6 +15,7 @@ from fpml_cdm.java_gen.agent import (
     AgentResult,
     load_tool_specs,
     run_agent,
+    scale_java_gen_config_for_node_count,
     TOOL_DISPATCH,
     SYSTEM_PROMPT,
 )
@@ -64,6 +65,45 @@ class ToolsJsonTests(unittest.TestCase):
             "finish",
         ]
         self.assertEqual(names, expected)
+
+
+class ScaleJavaGenConfigTests(unittest.TestCase):
+
+    def test_small_instance_unchanged(self) -> None:
+        cfg = AgentConfig(
+            max_iterations=25,
+            max_tool_calls=60,
+            timeout_seconds=500,
+            match_threshold=93.0,
+        )
+        out = scale_java_gen_config_for_node_count(cfg, 100)
+        self.assertIs(out, cfg)
+
+    def test_over_400_raises_floors(self) -> None:
+        cfg = AgentConfig()
+        out = scale_java_gen_config_for_node_count(cfg, 500)
+        self.assertEqual(out.max_iterations, 50)
+        self.assertEqual(out.max_tool_calls, 150)
+        self.assertEqual(out.timeout_seconds, 900)
+        self.assertEqual(out.match_threshold, 95.0)
+
+    def test_over_400_respects_higher_user_limits(self) -> None:
+        cfg = AgentConfig(
+            max_iterations=80,
+            max_tool_calls=200,
+            timeout_seconds=1200,
+        )
+        out = scale_java_gen_config_for_node_count(cfg, 500)
+        self.assertEqual(out.max_iterations, 80)
+        self.assertEqual(out.max_tool_calls, 200)
+        self.assertEqual(out.timeout_seconds, 1200)
+
+    def test_mid_tier_over_150(self) -> None:
+        cfg = AgentConfig()
+        out = scale_java_gen_config_for_node_count(cfg, 200)
+        self.assertEqual(out.max_iterations, 35)
+        self.assertEqual(out.max_tool_calls, 100)
+        self.assertEqual(out.timeout_seconds, 600)
 
 
 # ── Mock LLM client ──────────────────────────────────────────────────

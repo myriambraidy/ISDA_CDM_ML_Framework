@@ -22,6 +22,10 @@ class CamelToScreamingSnakeTests(unittest.TestCase):
     def test_multi_word_with_digit(self) -> None:
         self.assertEqual(_camel_to_screaming_snake("Cash"), "CASH")
 
+    def test_slash_day_count(self) -> None:
+        self.assertEqual(_camel_to_screaming_snake("ACT/360"), "ACT_360")
+        self.assertEqual(_camel_to_screaming_snake("30/360"), "_30_360")
+
 
 class SchemaIndexBuildTests(unittest.TestCase):
     """Test the index builds correctly over the real 845 schema files."""
@@ -141,6 +145,14 @@ class EnumDetectionTests(unittest.TestCase):
         java_vals = {c["java_constant"] for c in constants}
         self.assertEqual(json_vals, {"Party1", "Party2"})
         self.assertEqual(java_vals, {"PARTY_1", "PARTY_2"})
+
+    def test_enum_json_value_java_identifier_day_count(self) -> None:
+        fn = self.idx.type_name_to_file("DayCountFractionEnum")
+        assert fn is not None
+        self.assertEqual(
+            self.idx.enum_json_value_java_identifier(fn, "ACT/360"),
+            "ACT_360",
+        )
 
     def test_all_enum_names_not_empty(self) -> None:
         enums = self.idx.all_enum_names()
