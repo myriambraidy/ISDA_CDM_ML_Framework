@@ -10,9 +10,9 @@ import json
 import platform
 import re
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Set, Union
 
 from .schema_index import SchemaIndex
 
@@ -130,7 +130,68 @@ WELL_KNOWN_IMPORTS: Dict[str, str] = {
     "PartyIdentifierTypeEnum": "cdm.base.staticdata.party.PartyIdentifierTypeEnum",
     "FloatingRateIndexEnum": "cdm.base.staticdata.asset.rates.FloatingRateIndexEnum",
     "CounterpartyRoleEnum": "cdm.base.staticdata.party.CounterpartyRoleEnum",
+    # Rosetta meta / refs (equity, performance, legal, etc.)
+    "Key": "com.rosetta.model.lib.meta.Key",
+    "ReferenceWithMetaDate": "com.rosetta.model.metafields.ReferenceWithMetaDate",
+    "TimeTypeEnum": "cdm.observable.common.TimeTypeEnum",
+    "InstrumentTypeEnum": "cdm.base.staticdata.asset.common.InstrumentTypeEnum",
+    "LegalAgreementTypeEnum": "cdm.legaldocumentation.common.LegalAgreementTypeEnum",
+    "MasterAgreementTypeEnum": "cdm.legaldocumentation.master.MasterAgreementTypeEnum",
+    "GoverningLawEnum": "cdm.legaldocumentation.common.GoverningLawEnum",
+    "TaxonomySourceEnum": "cdm.base.staticdata.asset.common.TaxonomySourceEnum",
+    "CompoundingMethodEnum": "cdm.product.asset.CompoundingMethodEnum",
+    "PayRelativeToEnum": "cdm.product.common.schedule.PayRelativeToEnum",
+    "ResetRelativeToEnum": "cdm.product.common.schedule.ResetRelativeToEnum",
 }
+
+# Alias for hint lookup in javac error repair (same mapping as WELL_KNOWN_IMPORTS).
+WELL_KNOWN_BUILDER_IMPORTS: Dict[str, str] = WELL_KNOWN_IMPORTS
+
+
+def _relevant_well_known_imports(
+    *,
+    type_registry: Dict[str, Dict[str, object]],
+    enums_used: List[Dict[str, str]],
+    type_summary: Dict[str, int],
+    location_array_warnings: List[object],
+    reference_pattern_total: int,
+    java_type_warnings: List[object],
+) -> Dict[str, str]:
+    """Subset of WELL_KNOWN_IMPORTS for the LLM-facing compact inspect payload."""
+    needed_simple: Set[str] = {
+        "MetaFields",
+        "FieldWithMetaDate",
+        "FieldWithMetaString",
+        "Date",
+        "BigDecimal",
+    }
+    for entry in type_registry.values():
+        if not isinstance(entry, dict):
+            continue
+        sn = entry.get("simple_name")
+        if isinstance(sn, str) and sn:
+            needed_simple.add(sn)
+    for e in enums_used:
+        et = e.get("enum_type")
+        if isinstance(et, str) and et:
+            needed_simple.add(et)
+    for key in type_summary:
+        if key in WELL_KNOWN_IMPORTS:
+            needed_simple.add(key)
+    if location_array_warnings:
+        needed_simple.add("Key")
+    if reference_pattern_total > 0:
+        needed_simple.update(
+            {"Reference", "ReferenceWithMetaString", "ReferenceWithMetaDate"}
+        )
+    if java_type_warnings:
+        needed_simple.update({"FieldWithMetaDate", "Date"})
+    out: Dict[str, str] = {}
+    for name in sorted(needed_simple):
+        if name in WELL_KNOWN_IMPORTS:
+            out[name] = WELL_KNOWN_IMPORTS[name]
+    return out
+
 
 _REFERENCE_SCHEMA = "com-rosetta-model-lib-meta-Reference.schema.json"
 
@@ -175,8 +236,17 @@ def _setter_hint_for_property(
         return (f"add{prop_name[0].upper()}{prop_name[1:]}", None)
     if prop_name == "address" and ref == _REFERENCE_SCHEMA:
         return (
+            "setGlobalReference",
+            "JSON property 'address' (DOCUMENT scope): use setGlobalReference(String) with "
+            "JSON address.value — NOT Reference.builder(), NOT setReference(Reference), NOT setAddress. "
+            "See inspect_cdm_json reference_patterns_sample.",
+        )
+    if prop_name == "reference" and ref == _REFERENCE_SCHEMA:
+        return (
             "setReference",
-            "JSON property address maps to setReference(Reference); there is no setAddress.",
+            "setReference(Reference) is for Rosetta internal identity only. For document-scope "
+            "cross-references from JSON address/globalReference, use setGlobalReference / setExternalReference "
+            "on the ReferenceWithMeta* builder instead.",
         )
     if prop_name == "globalReference":
         return ("setGlobalReference", None)
@@ -185,10 +255,63 @@ def _setter_hint_for_property(
     return (f"set{prop_name[0].upper()}{prop_name[1:]}", None)
 
 
+def _classify_reference_node(node: dict, path: str) -> Optional[Dict[str, object]]:
+    """Classify JSON objects that carry CDM reference fields (address, globalReference, externalReference)."""
+    has_addr = "address" in node and isinstance(node.get("address"), dict)
+    has_global = "globalReference" in node
+    has_external = "externalReference" in node
+    if not (has_addr or has_global or has_external):
+        return None
+
+    if has_addr:
+        addr = node["address"]
+        scope = addr.get("scope", "DOCUMENT")
+        value = addr.get("value", "")
+        builder_call = f'.setGlobalReference("{value}")'
+        note = (
+            f"JSON has address with value={value!r} (scope={scope!r}). "
+            "Use .setGlobalReference with that value string on the ReferenceWithMeta* builder; "
+            "do not use Reference.builder(), setAddress(), or nested setReference(Reference) for document scope."
+        )
+        return {
+            "json_path": path,
+            "pattern": "address",
+            "builder_call": builder_call,
+            "note": note,
+        }
+
+    parts: List[str] = []
+    if has_global:
+        parts.append(f'.setGlobalReference("{node["globalReference"]}")')
+    if has_external:
+        parts.append(f'.setExternalReference("{node["externalReference"]}")')
+    builder_joined = "\n        ".join(parts)
+    return {
+        "json_path": path,
+        "pattern": "globalReference" if has_global else "externalReference",
+        "builder_call": builder_joined,
+        "note": "Use these setter calls on the ReferenceWithMeta* builder.",
+    }
+
+
+def _reference_node_keys(node: dict) -> bool:
+    """True if this object looks like a CDM reference blob."""
+    if not isinstance(node, dict):
+        return False
+    if "address" in node and isinstance(node.get("address"), dict):
+        return True
+    return any(k in node for k in ("globalReference", "externalReference"))
+
+
 # ── Tool 1: inspect_cdm_json ─────────────────────────────────────────
 
-def inspect_cdm_json(json_path: str) -> Dict[str, object]:
-    """Analyze CDM JSON structure, resolve types via schema $refs."""
+def inspect_cdm_json(json_path: str, detail: str = "compact") -> Dict[str, object]:
+    """Analyze CDM JSON structure, resolve types via schema $refs.
+
+    ``detail``:
+    - ``compact`` (default): omit deep ``tree``; filtered ``well_known_imports``; smaller LLM payload.
+    - ``full``: full tree and complete ``well_known_imports`` (preflight, tests, debugging).
+    """
     idx = _get_index()
     raw = Path(json_path).read_text(encoding="utf-8")
     cdm_data = json.loads(raw)
@@ -230,15 +353,12 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
         schema_file: Optional[str],
     ) -> None:
         if isinstance(node, dict):
-            present_keys = [
-                k for k in ("globalReference", "externalReference") if k in node
-            ]
-            if present_keys:
-                reference_pattern_total["n"] += 1
-                if len(ref_patterns_sample) < max_ref_samples:
-                    ref_patterns_sample.append(
-                        {"json_path": path, "keys": present_keys}
-                    )
+            if _reference_node_keys(node):
+                ref_entry = _classify_reference_node(node, path)
+                if ref_entry:
+                    reference_pattern_total["n"] += 1
+                    if len(ref_patterns_sample) < max_ref_samples:
+                        ref_patterns_sample.append(ref_entry)
             for key, child in node.items():
                 child_path = f"{path}.{key}"
                 child_ref: Optional[str] = None
@@ -359,12 +479,35 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
                 "note": override["note"],
             })
 
+    location_array_warnings: List[Dict[str, object]] = []
+    seen_loc: set[str] = set()
+    for node in tree:
+        jp = str(node.get("json_path", ""))
+        if ".location" in jp and jp not in seen_loc:
+            seen_loc.add(jp)
+            location_array_warnings.append({
+                "json_path": jp,
+                "warning_type": "location_array_type",
+                "note": (
+                    "location arrays on MetaFields contain Key objects, not MetaFields. "
+                    "Use Key.builder().setScope(...).setValue(...).build() for each entry. "
+                    "Import: import com.rosetta.model.lib.meta.Key;"
+                ),
+            })
+            if len(location_array_warnings) >= 5:
+                break
+
     ref_note = (
-        "For ReferenceWithMeta* builders use setGlobalReference(String), "
-        "setExternalReference(String), and setReference(Reference) for JSON property address. "
-        "Do not use setAddress()."
+        "For ReferenceWithMeta* builders: use setGlobalReference(String) and setExternalReference(String) "
+        "from JSON globalReference / externalReference. For JSON property 'address' with scope DOCUMENT, "
+        "use setGlobalReference(JSON address.value) — do NOT nest Reference.builder() or use setReference(Reference) "
+        "for document-scope cross-references. There is no setAddress()."
     )
-    return {
+    wk_note = (
+        "MANDATORY: every import line must come from well_known_imports, type_registry "
+        "import_statement fields, or enums_used import_statement — never guess packages by analogy."
+    )
+    full_result: Dict[str, object] = {
         "root_type": "Trade",
         "total_nodes": len(tree),
         "tree": tree,
@@ -373,14 +516,34 @@ def inspect_cdm_json(json_path: str) -> Dict[str, object]:
         "type_registry": type_registry,
         "java_type_warnings": java_type_warnings,
         "well_known_imports": WELL_KNOWN_IMPORTS,
-        "well_known_imports_note": (
-            "Consider imports for these symbols when building trades; not all appear as explicit "
-            "values in the JSON instance."
-        ),
+        "well_known_imports_note": wk_note,
         "reference_pattern_total": reference_pattern_total["n"],
         "reference_patterns_sample": ref_patterns_sample,
         "reference_api_note": ref_note if reference_pattern_total["n"] else None,
+        "location_array_warnings": location_array_warnings,
     }
+    if detail == "full":
+        return full_result
+
+    compact: Dict[str, object] = {k: v for k, v in full_result.items() if k != "tree"}
+    compact["tree_omitted"] = True
+    compact["trade_top_level_keys"] = sorted(trade.keys()) if isinstance(trade, dict) else []
+    compact["inspect_note"] = (
+        "Deep `tree` omitted to save context. Use type_summary + lookup_cdm_schema(type_name) "
+        "for structure. Use inspect_cdm_json(..., detail='full') only when debugging."
+    )
+    compact["well_known_imports"] = _relevant_well_known_imports(
+        type_registry=type_registry,
+        enums_used=enums_used,
+        type_summary=dict(type_counts),
+        location_array_warnings=location_array_warnings,
+        reference_pattern_total=reference_pattern_total["n"],
+        java_type_warnings=java_type_warnings,
+    )
+    compact["well_known_imports_note"] = (
+        wk_note + " Subset shown; full map in inspect_cdm_json(..., detail='full')."
+    )
+    return compact
 
 
 # ── Tool 2: lookup_cdm_schema ────────────────────────────────────────
@@ -440,8 +603,9 @@ def lookup_cdm_schema(type_name: str) -> Dict[str, object]:
     }
     if "ReferenceWithMeta" in resolved_title or "ReferenceWithMeta" in type_name:
         result["builder_reference_note"] = (
-            "ReferenceWithMeta* builders: use setGlobalReference, setExternalReference, "
-            "or setReference(Reference) for JSON address. There is no setAddress()."
+            "ReferenceWithMeta* builders: use setGlobalReference(String) / setExternalReference(String) "
+            "for document-scope refs. JSON 'address' with DOCUMENT scope → setGlobalReference(address.value). "
+            "setReference(Reference) is for internal Rosetta identity, not document cross-refs. No setAddress()."
         )
     return result
 
@@ -778,7 +942,26 @@ def _parse_javac_errors(stderr: str, src_path: Path) -> List[Dict[str, object]]:
                 message,
                 re.DOTALL,
             )
-            if symbol_match and not type_mismatch:
+            wrong_package_match = re.search(
+                r"cannot find symbol.*?class\s+(\w+).*?location:\s+package\s+([\w.]+)",
+                message,
+                re.DOTALL,
+            )
+            if wrong_package_match and not type_mismatch:
+                missing_class = wrong_package_match.group(1)
+                wrong_pkg = wrong_package_match.group(2)
+                correct = WELL_KNOWN_BUILDER_IMPORTS.get(missing_class)
+                if correct:
+                    error_entry["hint"] = (
+                        f"'{missing_class}' is in the wrong package. "
+                        f"You wrote: import {wrong_pkg}.{missing_class} — WRONG. "
+                        f"Correct: import {correct}; "
+                        f"If this symbol is in well_known_imports, copy that import verbatim."
+                    )
+                    error_entry["correct_import"] = f"import {correct};"
+                    error_entry["wrong_package"] = wrong_pkg
+                    error_entry["missing_symbol"] = missing_class
+            elif symbol_match and not type_mismatch:
                 missing = symbol_match.group(1)
                 error_entry["hint"] = (
                     f"'{missing}' is not imported. Add the import statement "
@@ -829,12 +1012,43 @@ def compile_java(
         return {"success": True, "class_file": class_file, "warnings": []}
 
     errors = _parse_javac_errors(result.stderr, src_path)
-    return {
+
+    def _normalize_error_key(entry: Dict[str, object]) -> str:
+        ms = entry.get("missing_symbol")
+        if isinstance(ms, str) and ms:
+            return f"cannot_find_symbol:{ms}"
+        msg = str(entry.get("message", ""))
+        m = msg.strip()
+        m = re.sub(r"\n\d+ errors\s*$", "", m)
+        return m[:120]
+
+    out: Dict[str, object] = {
         "success": False,
         "errors": errors,
         "error_count": len(errors),
         "raw_stderr": result.stderr[:2000],
     }
+    norm_keys = [_normalize_error_key(e) for e in errors]
+    msg_counts = Counter(norm_keys)
+    repeated_patterns = [
+        {
+            "pattern": msg,
+            "count": cnt,
+            "fix_advice": (
+                f"This error appears {cnt} times. Fix ALL {cnt} instances in ONE "
+                "batch patch_java_file call (patches array)."
+            ),
+        }
+        for msg, cnt in msg_counts.items()
+        if cnt > 1
+    ]
+    if repeated_patterns:
+        out["repeated_error_patterns"] = repeated_patterns
+        out["batch_fix_required"] = (
+            f"{len(repeated_patterns)} error pattern(s) repeat. "
+            "Fix each pattern in a single batch patch_java_file call; do not patch one line at a time."
+        )
+    return out
 
 
 # ── Tool 10: run_java ────────────────────────────────────────────────

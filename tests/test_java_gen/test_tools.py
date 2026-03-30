@@ -19,6 +19,7 @@ from fpml_cdm.java_gen.tools import (
     validate_output,
     finish,
     _parse_javac_errors,
+    _classify_reference_node,
     json_stem_to_java_class_name,
     set_java_generation_target,
     reset_java_generation_target,
@@ -30,13 +31,33 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 CDM_FIXTURE = FIXTURES / "expected" / "fx_forward_cdm.json"
 
 
+# ── _classify_reference_node ─────────────────────────────────────────
+
+class ClassifyReferenceNodeTests(unittest.TestCase):
+
+    def test_address_maps_to_set_global_reference(self) -> None:
+        node = {"address": {"scope": "DOCUMENT", "value": "quantity-1"}}
+        r = _classify_reference_node(node, "$.trade.x")
+        assert r is not None
+        self.assertEqual(r["pattern"], "address")
+        self.assertIn("setGlobalReference", r["builder_call"])
+        self.assertIn("quantity-1", r["builder_call"])
+
+    def test_global_and_external(self) -> None:
+        node = {"globalReference": "abc", "externalReference": "party1"}
+        r = _classify_reference_node(node, "$.y")
+        assert r is not None
+        self.assertIn("setGlobalReference", r["builder_call"])
+        self.assertIn("setExternalReference", r["builder_call"])
+
+
 # ── inspect_cdm_json ─────────────────────────────────────────────────
 
 class InspectCdmJsonTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.result = inspect_cdm_json(str(CDM_FIXTURE))
+        cls.result = inspect_cdm_json(str(CDM_FIXTURE), detail="full")
 
     def test_root_type(self) -> None:
         self.assertEqual(self.result["root_type"], "Trade")
@@ -89,6 +110,34 @@ class InspectCdmJsonTests(unittest.TestCase):
             self.assertIn("value", leaf)
 
 
+class InspectCdmJsonCompactTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.compact = inspect_cdm_json(str(CDM_FIXTURE))
+        cls.full = inspect_cdm_json(str(CDM_FIXTURE), detail="full")
+
+    def test_compact_omits_tree(self) -> None:
+        self.assertNotIn("tree", self.compact)
+        self.assertTrue(self.compact.get("tree_omitted"))
+
+    def test_compact_smaller_than_full(self) -> None:
+        self.assertLess(len(json.dumps(self.compact)), len(json.dumps(self.full)))
+
+    def test_compact_keeps_summary_fields(self) -> None:
+        self.assertIn("type_summary", self.compact)
+        self.assertIn("type_registry", self.compact)
+        self.assertIn("total_nodes", self.compact)
+        self.assertEqual(self.compact["total_nodes"], self.full["total_nodes"])
+
+    def test_compact_filtered_well_known_subset_of_full(self) -> None:
+        cw = self.compact["well_known_imports"]
+        fw = self.full["well_known_imports"]
+        self.assertIsInstance(cw, dict)
+        for k, v in cw.items():
+            self.assertEqual(fw[k], v)
+
+
 # ── lookup_cdm_schema ────────────────────────────────────────────────
 
 class LookupCdmSchemaTests(unittest.TestCase):
@@ -110,11 +159,11 @@ class LookupCdmSchemaTests(unittest.TestCase):
             result["properties"]["tradeDate"]["setter_hint"], "setTradeDate"
         )
 
-    def test_reference_with_meta_address_uses_set_reference(self) -> None:
+    def test_reference_with_meta_address_uses_set_global_reference_hint(self) -> None:
         result = lookup_cdm_schema("ReferenceWithMetaNonNegativeQuantitySchedule")
         self.assertNotIn("error", result)
         addr = result["properties"]["address"]
-        self.assertEqual(addr["setter_hint"], "setReference")
+        self.assertEqual(addr["setter_hint"], "setGlobalReference")
         self.assertIn("setter_note", addr)
         self.assertIn("builder_reference_note", result)
 
@@ -449,7 +498,7 @@ class CompileJavaTests(unittest.TestCase):
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
-        for f in ("TestCompile.java", "TestCompile.class", "TestFail.java"):
+        for f in ("TestCompile.java", "TestCompile.class", "TestFail.java", "DupErr.java", "DupErr.class"):
             p = GENERATED_DIR / f
             if p.exists():
                 p.unlink()
@@ -469,6 +518,20 @@ class CompileJavaTests(unittest.TestCase):
         self.assertGreater(result["error_count"], 0)
         self.assertIn("line", result["errors"][0])
         self.assertIn("message", result["errors"][0])
+
+    def test_repeated_error_patterns_when_same_error_twice(self) -> None:
+        code = (
+            "public class DupErr {\n"
+            "    void a() { UnknownDupSym x = null; }\n"
+            "    void b() { UnknownDupSym y = null; }\n"
+            "}\n"
+        )
+        write_java_file(code=code, filename="DupErr.java")
+        result = compile_java(filename="DupErr.java")
+        self.assertFalse(result["success"])
+        self.assertGreaterEqual(result["error_count"], 2)
+        self.assertIn("repeated_error_patterns", result)
+        self.assertIn("batch_fix_required", result)
 
     def test_missing_source_returns_error(self) -> None:
         result = compile_java(filename="DoesNotExist.java")
@@ -635,7 +698,7 @@ class InspectTypeRegistryTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.result = inspect_cdm_json(str(CDM_FIXTURE))
+        cls.result = inspect_cdm_json(str(CDM_FIXTURE), detail="full")
 
     def test_type_registry_exists(self) -> None:
         self.assertIn("type_registry", self.result)
@@ -679,12 +742,23 @@ class InspectTypeRegistryTests(unittest.TestCase):
         self.assertEqual(
             wk["InterestRatePayout"], "cdm.product.asset.InterestRatePayout"
         )
+        self.assertIn("Key", wk)
+        self.assertEqual(wk["Key"], "com.rosetta.model.lib.meta.Key")
         self.assertIn("well_known_imports_note", self.result)
+        self.assertIn("MANDATORY", self.result["well_known_imports_note"])
 
     def test_reference_patterns(self) -> None:
         self.assertGreater(self.result["reference_pattern_total"], 0)
         self.assertIsInstance(self.result["reference_patterns_sample"], list)
         self.assertIsNotNone(self.result["reference_api_note"])
+        sample = self.result["reference_patterns_sample"]
+        self.assertGreater(len(sample), 0)
+        self.assertIn("builder_call", sample[0])
+        self.assertIn("pattern", sample[0])
+
+    def test_location_array_warnings_present(self) -> None:
+        self.assertIn("location_array_warnings", self.result)
+        self.assertIsInstance(self.result["location_array_warnings"], list)
 
 
 # ── patch_java_file: no-op guard & batch mode ────────────────────────
@@ -796,6 +870,20 @@ class CompileErrorHintTests(unittest.TestCase):
         self.assertIn("hint", errors[0])
         self.assertEqual(errors[0]["missing_symbol"], "TradeIdentifier")
 
+    def test_wrong_package_hint(self) -> None:
+        stderr = (
+            "Foo.java:2: error: cannot find symbol\n"
+            "import com.rosetta.model.lib.meta.ReferenceWithMetaString;\n"
+            "^\n"
+            "  symbol:   class ReferenceWithMetaString\n"
+            "  location: package com.rosetta.model.lib.meta\n"
+        )
+        errors = _parse_javac_errors(stderr, Path("Foo.java"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("correct_import", errors[0])
+        self.assertIn("metafields.ReferenceWithMetaString", str(errors[0]["correct_import"]))
+        self.assertEqual(errors[0]["wrong_package"], "com.rosetta.model.lib.meta")
+
 
 # ── SYSTEM_PROMPT checks ─────────────────────────────────────────────
 
@@ -813,6 +901,11 @@ class SystemPromptTests(unittest.TestCase):
     def test_mentions_type_registry(self) -> None:
         from fpml_cdm.java_gen.agent import SYSTEM_PROMPT
         self.assertIn("type_registry", SYSTEM_PROMPT)
+
+    def test_mentions_mandatory_import_rule(self) -> None:
+        from fpml_cdm.java_gen.agent import SYSTEM_PROMPT
+        self.assertIn("MANDATORY IMPORT", SYSTEM_PROMPT)
+        self.assertIn("Key.builder()", SYSTEM_PROMPT)
 
     def test_no_one_at_a_time_rule(self) -> None:
         from fpml_cdm.java_gen.agent import SYSTEM_PROMPT

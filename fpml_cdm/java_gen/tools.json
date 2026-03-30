@@ -2,13 +2,18 @@
   "tools": [
     {
       "name": "inspect_cdm_json",
-      "description": "Analyze CDM JSON structure. Returns: tree, enums_used, type_summary, type_registry (Java imports/builders per schema ref), java_type_warnings (date etc.), well_known_imports (common CDM/JDK types to import), reference_pattern_total + reference_patterns_sample + reference_api_note when globalReference/externalReference appear (use setGlobalReference/setExternalReference/setReference; never setAddress). Call FIRST — use type_registry directly instead of resolve_java_type for each type.",
+      "description": "CDM JSON summary: type_summary, type_registry, enums_used, ref/location hints. Default omits deep tree; use lookup_cdm_schema per type. detail=full for debug only.",
       "parameters": {
         "type": "object",
         "properties": {
           "json_path": {
             "type": "string",
-            "description": "Path to the CDM JSON file to analyze"
+            "description": "Path to the CDM JSON file"
+          },
+          "detail": {
+            "type": "string",
+            "enum": ["compact", "full"],
+            "description": "compact (default): no tree, filtered well_known_imports. full: complete tree and imports."
           }
         },
         "required": ["json_path"]
@@ -16,13 +21,13 @@
     },
     {
       "name": "lookup_cdm_schema",
-      "description": "Look up the JSON Schema definition for a CDM type. Returns properties with types, $ref, required flags, Java classes, setter_hint, optional setter_note (e.g. JSON address → setReference, not setAddress), and builder_reference_note on ReferenceWithMeta* types.",
+      "description": "JSON Schema for a CDM type: properties, $ref, required, Java class, setter hints.",
       "parameters": {
         "type": "object",
         "properties": {
           "type_name": {
             "type": "string",
-            "description": "CDM type name (e.g. 'Trade', 'Party', 'SettlementPayout') or schema filename"
+            "description": "CDM type or schema stem (e.g. Trade, SettlementPayout)"
           }
         },
         "required": ["type_name"]
@@ -30,13 +35,13 @@
     },
     {
       "name": "resolve_java_type",
-      "description": "Resolve a CDM schema $ref to its fully-qualified Java class name, package, builder class, and import statement. Use this when you need the exact import for a type referenced in a schema.",
+      "description": "Resolve schema $ref to FQN, package, builder, import line.",
       "parameters": {
         "type": "object",
         "properties": {
           "schema_ref": {
             "type": "string",
-            "description": "Schema $ref value (e.g. 'cdm-event-common-Trade.schema.json')"
+            "description": "Schema filename from $ref"
           }
         },
         "required": ["schema_ref"]
@@ -44,13 +49,13 @@
     },
     {
       "name": "list_enum_values",
-      "description": "List enum JSON values with java_constant names (uses schema oneOf titles when present; otherwise sanitized identifiers). May include enum_constant_warning for punctuation-heavy values — verify against JAR if compile fails.",
+      "description": "Enum JSON values and java_constant names; may warn on odd punctuation.",
       "parameters": {
         "type": "object",
         "properties": {
           "enum_name": {
             "type": "string",
-            "description": "Enum type name (e.g. 'CounterpartyRoleEnum', 'SettlementTypeEnum')"
+            "description": "Enum type name"
           }
         },
         "required": ["enum_name"]
@@ -58,7 +63,7 @@
     },
     {
       "name": "get_java_template",
-      "description": "Get the boilerplate Java file template with main method and RosettaObjectMapper serialization. Contains IMPORTS_PLACEHOLDER and BUILDER_CODE_PLACEHOLDER markers for you to fill in. The public class name matches the active generation target (derived from the CDM JSON filename stem for this run).",
+      "description": "Boilerplate Java with IMPORTS_PLACEHOLDER and BUILDER_CODE_PLACEHOLDER.",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -66,17 +71,17 @@
     },
     {
       "name": "write_java_file",
-      "description": "Write complete Java source code to the generation output directory. Overwrites any existing file.",
+      "description": "Write full Java source to generated/ (overwrites).",
       "parameters": {
         "type": "object",
         "properties": {
           "code": {
             "type": "string",
-            "description": "Complete Java source code to write"
+            "description": "Full source"
           },
           "filename": {
             "type": "string",
-            "description": "Output filename (omit to use active target, e.g. MyTrade.java from CDM JSON stem)"
+            "description": "Optional; defaults to active target"
           }
         },
         "required": ["code"]
@@ -84,38 +89,28 @@
     },
     {
       "name": "read_java_file",
-      "description": "Read the current content of the generated Java source file. Use this to review code before compilation or after making patches.",
+      "description": "Read generated Java file (default active target).",
       "parameters": {
         "type": "object",
         "properties": {
           "filename": {
             "type": "string",
-            "description": "Filename to read (omit to use active generation target)"
+            "description": "Optional filename"
           }
         }
       }
     },
     {
       "name": "patch_java_file",
-      "description": "Replace text sections in the Java file. Supports single replacement (old_text/new_text) or batch mode via the patches parameter (list of {old_text, new_text} pairs). Use batch mode to apply multiple independent fixes in one call.",
+      "description": "Replace via old_text/new_text or batch patches: [{old_text, new_text}, ...].",
       "parameters": {
         "type": "object",
         "properties": {
-          "old_text": {
-            "type": "string",
-            "description": "Exact text to find in the file (for single replacement)"
-          },
-          "new_text": {
-            "type": "string",
-            "description": "Replacement text (for single replacement)"
-          },
-          "filename": {
-            "type": "string",
-            "description": "Filename to patch (omit to use active generation target)"
-          },
+          "old_text": { "type": "string" },
+          "new_text": { "type": "string" },
+          "filename": { "type": "string" },
           "patches": {
             "type": "array",
-            "description": "Batch mode: list of {old_text, new_text} pairs to apply in one call",
             "items": {
               "type": "object",
               "properties": {
@@ -130,43 +125,40 @@
     },
     {
       "name": "compile_java",
-      "description": "Compile the Java file against the CDM classpath (rosetta-validator fat JAR). Returns structured compilation errors with line numbers, messages, and the offending source line. If successful, the .class file is ready to run.",
+      "description": "javac vs CDM classpath; structured errors, repeated_error_patterns when applicable.",
       "parameters": {
         "type": "object",
         "properties": {
           "filename": {
             "type": "string",
-            "description": "Java source file to compile (omit to use active generation target)"
+            "description": "Optional; defaults to active target"
           }
         }
       }
     },
     {
       "name": "run_java",
-      "description": "Execute the compiled Java class. Captures stdout (expected to be CDM JSON) and stderr. The class should have a main method that builds a Trade, serializes it via RosettaObjectMapper, and prints it.",
+      "description": "Run compiled class; stdout expected CDM JSON.",
       "parameters": {
         "type": "object",
         "properties": {
-          "class_name": {
-            "type": "string",
-            "description": "Class name to run (omit to use active generation target)"
-          },
+          "class_name": { "type": "string" },
           "timeout": {
             "type": "integer",
-            "description": "Max seconds to wait (default: 30)"
+            "description": "Seconds (default 30)"
           }
         }
       }
     },
     {
       "name": "validate_output",
-      "description": "Validate the Java-produced JSON against the official CDM Trade JSON Schema (845 schemas with $ref resolution). Confirms the output is structurally valid CDM.",
+      "description": "Validate JSON against official CDM Trade schema (resolved $ref).",
       "parameters": {
         "type": "object",
         "properties": {
           "json_string": {
             "type": "string",
-            "description": "JSON string to validate"
+            "description": "JSON to validate"
           }
         },
         "required": ["json_string"]
@@ -174,26 +166,22 @@
     },
     {
       "name": "finish",
-      "description": "Signal that the task is complete. Call this when the Java code compiles, runs, and produces reasonable CDM JSON on stdout (or when max iterations are reached).",
+      "description": "End task: success or failure + summary.",
       "parameters": {
         "type": "object",
         "properties": {
           "status": {
             "type": "string",
-            "enum": ["success", "failure"],
-            "description": "Whether the generation succeeded"
+            "enum": ["success", "failure"]
           },
           "summary": {
-            "type": "string",
-            "description": "Brief summary of the result"
+            "type": "string"
           },
           "java_file": {
-            "type": "string",
-            "description": "Path to the generated Java file"
+            "type": "string"
           },
           "match_percentage": {
-            "type": "number",
-            "description": "Optional self-reported quality score (0-100); not computed automatically"
+            "type": "number"
           }
         },
         "required": ["status", "summary"]

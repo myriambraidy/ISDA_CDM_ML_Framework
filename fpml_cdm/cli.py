@@ -331,6 +331,11 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
 
     err.write(f"\n[1/2] Initializing agent for {cdm_json_path}...\n")
 
+    if getattr(args, "debug_openrouter", False):
+        import os
+        os.environ["FPML_OPENROUTER_LOG_REQUEST_BYTES"] = "1"
+        err.write("  OpenRouter debug: logging request JSON size each call (FPML_OPENROUTER_LOG_REQUEST_BYTES=1)\n")
+
     config = AgentConfig(
         max_iterations=args.max_iterations,
         max_tool_calls=args.max_tool_calls,
@@ -584,6 +589,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     java_gen_parser.add_argument("--verbose", "-v", action="store_true", help="Always show per-tool and LLM timing logs")
     java_gen_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-tool and LLM timing logs (default: show when stderr is a TTY)")
+    java_gen_parser.add_argument(
+        "--debug-openrouter",
+        action="store_true",
+        help=(
+            "Log each OpenRouter request size (messages count + JSON UTF-8 bytes) to stderr; "
+            "on HTTP errors the API response body is always printed. "
+            "Same as env FPML_OPENROUTER_LOG_REQUEST_BYTES=1 for request size."
+        ),
+    )
     java_gen_parser.set_defaults(func=cmd_generate_java)
 
     fpml_to_java_parser = subparsers.add_parser(

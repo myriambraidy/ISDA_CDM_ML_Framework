@@ -1,5 +1,6 @@
 """Unit tests for OpenRouterClient with mocked HTTP."""
 
+import json
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -109,8 +110,9 @@ class OpenRouterClientTests(unittest.TestCase):
             self.assertEqual(call_kw["headers"]["Authorization"], "Bearer sk-secret")
             self.assertEqual(call_kw["headers"]["Content-Type"], "application/json")
             self.assertIn("https://openrouter.ai/api/v1/chat/completions", post.call_args[0][0])
-            self.assertEqual(call_kw["json"]["model"], "google/gemini-2.5-flash")
-            self.assertEqual(call_kw["json"]["messages"], [{"role": "user", "content": "Hi"}])
+            body = json.loads(call_kw["data"].decode("utf-8"))
+            self.assertEqual(body["model"], "google/gemini-2.5-flash")
+            self.assertEqual(body["messages"], [{"role": "user", "content": "Hi"}])
 
     def test_client_requires_api_key(self) -> None:
         with self.assertRaises(ValueError) as ctx:

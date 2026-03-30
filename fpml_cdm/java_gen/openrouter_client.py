@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -84,7 +94,55 @@ class _Completions:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        resp = requests.post(url, json=payload, headers=headers, timeout=self._timeout)
+
+        # Pre-serialize for size diagnostics (same bytes requests will send as JSON body).
+        try:
+            payload_json = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            logger.exception("OpenRouter payload is not JSON-serializable: %s", exc)
+            raise
+        nbytes = len(payload_json.encode("utf-8"))
+        n_messages = len(payload.get("messages") or [])
+        if _env_flag("FPML_OPENROUTER_LOG_REQUEST_BYTES"):
+            sys.stderr.write(
+                f"[openrouter] POST {url} model={model!r} "
+                f"messages={n_messages} json_utf8_bytes={nbytes}\n"
+            )
+        logger.debug(
+            "OpenRouter POST %s model=%s messages=%s json_utf8_bytes=%s",
+            url,
+            model,
+            n_messages,
+            nbytes,
+        )
+
+        resp = requests.post(url, data=payload_json.encode("utf-8"), headers=headers, timeout=self._timeout)
+
+        if not resp.ok:
+            body = resp.text or ""
+            snippet = body[:16000]
+            if len(body) > 16000:
+                snippet += "\n... [truncated, total response length %s chars]" % len(body)
+            diag = (
+                f"\n=== OpenRouter HTTP {resp.status_code} {resp.reason} ===\n"
+                f"URL: {url}\n"
+                f"Model: {model!r}\n"
+                f"Request: {n_messages} messages, JSON body UTF-8 size: {nbytes} bytes\n"
+            )
+            # OpenRouter sometimes returns request id / provider errors in headers
+            rid = resp.headers.get("x-request-id") or resp.headers.get("X-Request-ID")
+            if rid:
+                diag += f"x-request-id: {rid}\n"
+            diag += f"Response body:\n{snippet}\n=== end OpenRouter error ===\n\n"
+            sys.stderr.write(diag)
+            logger.error(
+                "OpenRouter request failed: %s %s bytes=%s body=%s",
+                resp.status_code,
+                resp.reason,
+                nbytes,
+                body[:2000],
+            )
+
         resp.raise_for_status()
         data = resp.json()
         choices = []

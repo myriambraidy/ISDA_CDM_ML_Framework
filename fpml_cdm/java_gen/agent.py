@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from .prompt_blocks import PREFLIGHT_ALL_BLOCKS, build_system_prompt
 from .tools import (
     inspect_cdm_json,
     lookup_cdm_schema,
@@ -159,6 +161,156 @@ def _agent_result_exhausted(
     )
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def compact_tool_result_for_llm(fn_name: str, result_str: str) -> str:
+    """Shrink tool JSON strings before they are appended to the LLM message list."""
+    max_tool = _env_int("FPML_JAVA_GEN_MAX_TOOL_CHARS", 120_000)
+    max_read = _env_int("FPML_JAVA_GEN_MAX_READ_JAVA_CHARS", 48_000)
+    max_compile_msg = _env_int("FPML_JAVA_GEN_MAX_COMPILE_MSG_CHARS", 600)
+    max_compile_errors = _env_int("FPML_JAVA_GEN_MAX_COMPILE_ERRORS", 35)
+    max_stderr = _env_int("FPML_JAVA_GEN_MAX_COMPILE_STDERR_CHARS", 2_500)
+    max_stdout = _env_int("FPML_JAVA_GEN_MAX_RUN_JAVA_STDOUT_CHARS", 48_000)
+    max_lookup_props = _env_int("FPML_JAVA_GEN_MAX_LOOKUP_PROPERTIES", 80)
+
+    try:
+        payload = json.loads(result_str)
+    except json.JSONDecodeError:
+        if len(result_str) > max_tool:
+            return json.dumps(
+                {
+                    "_truncated": True,
+                    "_preview": result_str[: max_tool // 2],
+                    "_hint": "Tool result exceeded FPML_JAVA_GEN_MAX_TOOL_CHARS (non-JSON).",
+                }
+            )
+        return result_str
+
+    if not isinstance(payload, dict):
+        out = json.dumps(payload, default=str)
+        if len(out) > max_tool:
+            return json.dumps(
+                {
+                    "_truncated": True,
+                    "_type": type(payload).__name__,
+                    "_hint": "Serialized tool result exceeded FPML_JAVA_GEN_MAX_TOOL_CHARS.",
+                }
+            )
+        return out
+
+    if fn_name == "read_java_file" and isinstance(payload.get("content"), str):
+        content = payload["content"]
+        if len(content) > max_read:
+            lines = content.splitlines()
+            head_n, tail_n = 120, 120
+            if len(lines) > head_n + tail_n:
+                head = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(head_n))
+                ts = len(lines) - tail_n
+                tail = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(ts, len(lines)))
+                omitted = len(lines) - head_n - tail_n
+                payload["content"] = (
+                    f"{head}\n... [{omitted} lines omitted] ...\n{tail}"
+                )
+                payload["truncated"] = True
+        result_str = json.dumps(payload, default=str)
+
+    elif fn_name == "get_java_template" and isinstance(payload.get("template"), str):
+        tpl = payload["template"]
+        if len(tpl) > max_read:
+            lines = tpl.splitlines()
+            head_n, tail_n = 80, 80
+            if len(lines) > head_n + tail_n:
+                head = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(head_n))
+                ts = len(lines) - tail_n
+                tail = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(ts, len(lines)))
+                omitted = len(lines) - head_n - tail_n
+                payload["template"] = f"{head}\n... [{omitted} lines omitted] ...\n{tail}"
+                payload["truncated"] = True
+        result_str = json.dumps(payload, default=str)
+
+    elif fn_name == "compile_java":
+        errs = payload.get("errors")
+        if isinstance(errs, list):
+            trimmed: List[object] = []
+            for e in errs[:max_compile_errors]:
+                if isinstance(e, dict):
+                    e = dict(e)
+                    msg = e.get("message")
+                    if isinstance(msg, str) and len(msg) > max_compile_msg:
+                        e["message"] = msg[:max_compile_msg] + "…"
+                trimmed.append(e)
+            payload["errors"] = trimmed
+            if len(errs) > max_compile_errors:
+                payload["errors_truncated"] = True
+                payload["errors_omitted_count"] = len(errs) - max_compile_errors
+        rs = payload.get("raw_stderr")
+        if isinstance(rs, str) and len(rs) > max_stderr:
+            payload["raw_stderr"] = rs[:max_stderr] + "…"
+        result_str = json.dumps(payload, default=str)
+
+    elif fn_name == "run_java":
+        so = payload.get("stdout")
+        if isinstance(so, str) and len(so) > max_stdout:
+            payload["stdout"] = so[:max_stdout] + "…"
+            payload["stdout_truncated"] = True
+        se = payload.get("stderr")
+        if isinstance(se, str) and len(se) > max_stderr:
+            payload["stderr"] = se[:max_stderr] + "…"
+        result_str = json.dumps(payload, default=str)
+
+    elif fn_name == "lookup_cdm_schema" and "properties" in payload:
+        props = payload.get("properties")
+        if isinstance(props, dict) and len(props) > max_lookup_props:
+            keys = list(props.keys())[:max_lookup_props]
+            payload["properties"] = {k: props[k] for k in keys}
+            payload["properties_truncated"] = True
+            payload["properties_omitted_count"] = len(props) - max_lookup_props
+        result_str = json.dumps(payload, default=str)
+
+    elif fn_name == "validate_output":
+        errs = payload.get("errors")
+        if isinstance(errs, list) and len(errs) > max_compile_errors:
+            payload["errors"] = errs[:max_compile_errors]
+            payload["errors_truncated"] = True
+            payload["errors_omitted_count"] = len(errs) - max_compile_errors
+        result_str = json.dumps(payload, default=str)
+
+    elif fn_name == "inspect_cdm_json" and len(result_str) > max_tool:
+        # Belt-and-suspenders: drop registry values to one line each if still huge
+        tr = payload.get("type_registry")
+        if isinstance(tr, dict):
+            slim: Dict[str, object] = {}
+            for k, v in list(tr.items())[:200]:
+                if isinstance(v, dict):
+                    slim[k] = {
+                        "java_class": v.get("java_class"),
+                        "simple_name": v.get("simple_name"),
+                        "import_statement": v.get("import_statement"),
+                    }
+                else:
+                    slim[k] = v
+            payload["type_registry"] = slim
+            payload["type_registry_truncated"] = True
+        result_str = json.dumps(payload, default=str)
+
+    if len(result_str) > max_tool:
+        return json.dumps(
+            {
+                "tool": fn_name,
+                "_truncated": True,
+                "_original_chars": len(result_str),
+                "_preview": result_str[: max_tool // 2],
+                "_hint": "Result exceeded FPML_JAVA_GEN_MAX_TOOL_CHARS after compaction.",
+            }
+        )
+    return result_str
+
+
 def _format_tool_call_short(fn_name: str, fn_args: Dict[str, object]) -> str:
     """Format tool name + short args for stderr (omit huge payloads)."""
     parts: List[str] = []
@@ -223,104 +375,8 @@ class AgentResult:
         }
 
 
-SYSTEM_PROMPT = """\
-You are a Java code generator for ISDA CDM (Common Domain Model) trades.
-
-Your task: Given a CDM JSON file, generate executable Java code that reconstructs the
-same trade using CDM Java builder patterns.
-
-## Strategy
-
-Follow this workflow:
-1. Call `inspect_cdm_json` to understand the full structure.
-   - The response includes a **type_registry** with pre-resolved Java imports, builder
-     entries, and package names for EVERY type found. Use this directly — do NOT call
-     `resolve_java_type` for types already in the registry.
-   - **well_known_imports** lists common CDM/JDK types to import when building (e.g.
-     InterestRatePayout, MetaFields, DayCountFractionEnum).
-   - **reference_api_note** / **reference_patterns_sample** describe document references;
-     use setGlobalReference / setExternalReference / setReference — never setAddress.
-   - The response also includes **java_type_warnings** listing fields where the actual
-     Java type differs from the JSON schema type. PAY CLOSE ATTENTION to these.
-2. Call `get_java_template` for the boilerplate.
-3. For complex nested types, call `lookup_cdm_schema` to get property names and setter
-   hints (and setter_note when present). For JSON property `address` on ReferenceWithMeta*
-   types, setter_hint is setReference, not setAddress. Batch multiple lookups in one turn.
-4. For enum values, call `list_enum_values` to get the correct Java constants.
-5. Generate the complete Java code and call `write_java_file`.
-6. Call `compile_java` — if errors, fix them using `patch_java_file` and recompile.
-   Read the error hints carefully — they tell you exactly what type to use.
-7. Call `run_java` — capture the output (stdout should be JSON with a `trade` object).
-8. Optionally call `validate_output` on the stdout string to check CDM schema validity.
-9. Call `finish` with the result (success if compile + run succeed and output looks valid).
-
-## CDM Java Builder Conventions
-- Single values: `.setFieldName(value)`
-- Array values: `.addFieldName(item)` (one call per item)
-- Nested objects: `.setField(TypeName.builder()...build())`
-- Strings wrapped in FieldWithMetaString: `FieldWithMetaString.builder().setValue("...").build()`
-- Numbers: use `java.math.BigDecimal` for decimals
-- Enums: use the enum class constant (e.g., `CounterpartyRoleEnum.PARTY_1`)
-
-## CRITICAL: CDM Date Types
-The JSON schemas represent dates as strings, but CDM Java uses typed date classes:
-- **tradeDate**: use `FieldWithMetaDate.builder().setValue(Date.of(YYYY, MM, DD)).build()`
-  Import: `com.rosetta.model.metafields.FieldWithMetaDate` and `com.rosetta.model.lib.records.Date`
-- **valueDate, unadjustedDate**: use `Date.of(YYYY, MM, DD)`
-  Import: `com.rosetta.model.lib.records.Date`
-- **adjustedDate**: use `FieldWithMetaDate.builder().setValue(Date.of(YYYY, MM, DD)).build()`
-- Do NOT use `java.time.LocalDate` or plain `String` for CDM date fields.
-
-## CRITICAL: Underlier (e.g. FX Forward)
-When the CDM has an `underlier` (e.g. FX forward with Asset.Cash and a currency), you MUST build
-the full underlier structure from schema (Underlier → Observable → Asset → Cash → identifier),
-not `ReferenceWithMetaObservable.builder().setValue(null)`. Use `lookup_cdm_schema` for Underlier,
-Observable, Asset, Cash as needed and construct the full builder chain so the serialized JSON matches.
-
-## CRITICAL: Nested builders — close every .builder() with .build()
-Wrong (PartyIdentifier not closed before Party.setMeta — javac reports ')' expected):
-Party.builder()
-    .addPartyId(PartyIdentifier.builder()
-        .setIdentifier(FieldWithMetaString.builder().setValue("x").build())
-    .setMeta(...)
-
-Right:
-Party.builder()
-    .addPartyId(
-        PartyIdentifier.builder()
-            .setIdentifier(FieldWithMetaString.builder().setValue("x").build())
-            .build()
-    )
-    .setMeta(...)
-    .build()
-
-After every nested Type.builder() used inside add*(...), call .build() on that nested builder
-before the parent's next setter.
-
-## Efficiency Rules
-- **First 1–2 turns**: After `inspect_cdm_json` and `get_java_template`, call ALL
-  `lookup_cdm_schema` and `list_enum_values` you need in parallel in a single turn.
-  Do not call `write_java_file` until you have gathered schema and enum info for every
-  type you need. The LLM supports multiple tool calls per turn — use them.
-- **Batch lookups**: In one turn, call `lookup_cdm_schema` for every type you need
-  (Trade, Party, SettlementPayout, Underlier, etc.) and `list_enum_values` for every
-  enum (CounterpartyRoleEnum, PartyRoleEnum, SettlementTypeEnum, etc.).
-- **Batch patches**: Use the `patches` parameter of `patch_java_file` to apply multiple
-  independent fixes in a single call instead of one patch per call.
-- **Use type_registry**: The `inspect_cdm_json` response already has imports and builder
-  entries — use them directly. Only call `resolve_java_type` for types NOT in the registry.
-
-## Response format
-- Always respond with **at least one tool call**; do not respond with only commentary or planning.
-- If you need to reason, keep it brief and include the tool call(s) in the same turn.
-
-## Rules
-- ALWAYS look up schemas before assuming type names or method signatures
-- ALWAYS look up enums before using them — don't guess Java constant names
-- When compilation fails, read ALL errors and batch independent fixes together
-- The generated code must be self-contained in a single Java file (no package statement)
-- Use fully-qualified class names in the code OR add imports — never leave symbols unresolved
-"""
+# All optional prompt blocks enabled (for tests and callers that need the legacy string).
+SYSTEM_PROMPT = build_system_prompt(PREFLIGHT_ALL_BLOCKS)
 
 
 TOOL_DISPATCH: Dict[str, Callable[..., Dict[str, object]]] = {
@@ -394,8 +450,9 @@ def _run_agent_impl(
     config = config or AgentConfig()
     if log_progress is None:
         log_progress = sys.stderr.isatty()
+    preflight: Dict[str, object] = {}
     try:
-        preflight = inspect_cdm_json(cdm_json_path)
+        preflight = inspect_cdm_json(cdm_json_path, detail="full")
         total_nodes_raw = preflight.get("total_nodes", 0)
         if isinstance(total_nodes_raw, int):
             config = scale_java_gen_config_for_node_count(config, total_nodes_raw)
@@ -407,11 +464,14 @@ def _run_agent_impl(
                     f"timeout_seconds={config.timeout_seconds}\n"
                 )
     except Exception:
-        pass
+        preflight = dict(PREFLIGHT_ALL_BLOCKS)
+    system_prompt_effective = build_system_prompt(preflight)
     tool_specs = load_tool_specs()
     start_time = time.time()
     trace: List[Dict[str, object]] = []
     total_tool_calls = 0
+    consecutive_single_patches = 0
+    patch_loop_nudge_sent = False
     last_tool_key = ""
     repeat_count = 0
     consecutive_text_only = 0
@@ -432,7 +492,7 @@ def _run_agent_impl(
         pass
 
     messages: List[Dict[str, object]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt_effective},
         {
             "role": "user",
             "content": (
@@ -507,6 +567,17 @@ def _run_agent_impl(
             fn_name = tool_call.function.name
             fn_args = json.loads(tool_call.function.arguments)
 
+            if fn_name == "patch_java_file":
+                patches_arg = fn_args.get("patches")
+                is_single_patch = patches_arg is None or len(patches_arg) == 1
+                if is_single_patch:
+                    consecutive_single_patches += 1
+                else:
+                    consecutive_single_patches = 0
+            elif fn_name == "compile_java":
+                consecutive_single_patches = 0
+                patch_loop_nudge_sent = False
+
             # Loop detection
             tool_key = f"{fn_name}:{json.dumps(fn_args, sort_keys=True)}"
             if tool_key == last_tool_key:
@@ -539,6 +610,7 @@ def _run_agent_impl(
                 sys.stderr.write(f"    {_format_tool_call_short(fn_name, fn_args)}\n")
             t0_tool = time.perf_counter()
             result_str = _execute_tool(fn_name, fn_args)
+            result_str = compact_tool_result_for_llm(fn_name, result_str)
             t1_tool = time.perf_counter()
             total_tool_time += t1_tool - t0_tool
             if log_progress:
@@ -572,13 +644,31 @@ def _run_agent_impl(
             last_tool_name = fn_name
             last_tool_result_str = result_str
 
+        if consecutive_single_patches >= 3 and not patch_loop_nudge_sent:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "WARNING: You have called patch_java_file repeatedly with single-patch calls only. "
+                    "This wastes iterations. STOP patching one fix at a time. Instead:\n"
+                    "1. Call read_java_file (optionally with line range) to find ALL occurrences of the same pattern.\n"
+                    "2. Fix ALL instances in ONE patch_java_file call using the patches array.\n"
+                    "3. Then call compile_java once.\n\n"
+                    "If replacing setReference(Reference.builder()...) with setGlobalReference(...), "
+                    "scan the entire file and fix every occurrence in one batch."
+                ),
+            })
+            patch_loop_nudge_sent = True
+            consecutive_single_patches = 0
+
         if last_tool_name == "compile_java":
             try:
                 compile_res = json.loads(last_tool_result_str)
                 if compile_res.get("success") is True:
                     det_class = get_active_java_class_name()
                     run_result = run_java(class_name=det_class, timeout=30)
-                    run_result_str = json.dumps(run_result, default=str)
+                    run_result_str = compact_tool_result_for_llm(
+                        "run_java", json.dumps(run_result, default=str)
+                    )
                     id_run = "call_det_run"
                     messages.append({
                         "role": "assistant",
