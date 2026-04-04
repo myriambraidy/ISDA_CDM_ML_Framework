@@ -1,171 +1,279 @@
-# Project research: `fpml_isdacm`
+# Java generator agent (`fpml_cdm/java_gen`) — research notes
 
-This document is a snapshot of the repository as explored on **2026-03-28**. It describes purpose, layout, the several “agent” concepts, data flows, tooling, and known rough edges (including things that look incomplete or duplicated).
-
----
-
-## 1. What this repo is for
-
-The core product is a **Python library and CLI** (`fpml_cdm`) that converts **FpML XML** (today heavily **FX**: forwards, single-leg, swaps, vanilla options) into **ISDA CDM v6-shaped JSON**, validates it (JSON Schema, semantic checks against FpML, optional **Rosetta** type validation via Java), and can drive **LLM tool-calling loops** to:
-
-1. **Refine mappings** by proposing **structured patches** to declarative **rulesets** (not free-form CDM hallucination).
-2. **Generate Java** that builds the same CDM structure, with compile/run feedback in the loop.
-
-There is also a **Cursor Agent Skill** under `.agent/skills/fpml-to-cdm-fx-forward/` (documentation, sample assets, thin scripts) that parallels the real implementation in `fpml_cdm/`—useful for human/IDE workflows but not the runtime package.
+This document summarizes how the CDM Java code-generation **ReAct-style agent loop** works: what it optimizes for, how tools and prompts interact, and edge behaviors that are easy to miss from a quick skim.
 
 ---
 
-## 2. Top-level layout (messy bits called out)
+## 1. Purpose
 
-| Path | Role |
+The agent takes a **CDM trade JSON** file path and drives an LLM with **OpenAI-compatible tool calling** (`chat.completions.create` with `tools`, `tool_choice="auto"`). The model must produce **one self-contained Java class** under `rosetta-validator/generated/` that:
+
+- Compiles against the **shaded CDM** classpath (`rosetta-validator/target/rosetta-validator-1.0.0.jar` + `generated/`).
+- When run, prints **valid JSON** to stdout with a `trade` wrapper (same general shape as input).
+
+Success is normally signaled by the **`finish`** tool. The loop also has **fallback success** when the run ends without `finish` but a **`run_java` exit 0** appears in the trace (see §8).
+
+---
+
+## 2. Module layout
+
+| File | Role |
 |------|------|
-| `fpml_cdm/` | Main Python package: parser, rulesets, transformers, validators, mapping agent, Java-gen agent, LLM adapters |
-| `tests/` | `unittest` suite (`test_*.py`), fixtures under `tests/fixtures/` |
-| `schemas/` | JSON Schema artifacts for normalized trades and CDM (and many `cdm-regulation-*` schema files) |
-| `data/` | **FpML corpus** (`corpus/fpml_official/…`), **reference CDM JSON** (`corpus/isda_cdm_official/…`), `lei/bic_to_lei.json`, `fx_product_matrix.json`, corpus **reports** (`corpus/reports/*.json`) |
-| `rosetta-validator/` | Maven project: CDM **6.7.0** Java deps, fat JAR `rosetta-validator-1.0.0.jar`, **`generated/`** subtree used as the **primary output directory** for Java codegen tools |
-| `generated/` (repo root) | **Also** contains generated `.java` files—**duplicate / legacy** relative to `rosetta-validator/generated/` (easy to confuse which is authoritative) |
-| `tmp/` | Traces, intermediate JSON, experiment outputs |
-| `scripts/` | Operational runners (corpus check, FPML→Java pipeline); some overlap with `python -m fpml_cdm …` |
-| `.agent/` | Cursor skill: FPML→CDM FX forward guidance and samples |
-| `Makefile`, `make.ps1`, `make.sh`, `make.bat` | Test/corpus/rosetta/java-gen convenience targets |
-| `requirements.txt` | Minimal runtime: `jsonschema`, `requests`, `python-dotenv`; OpenAI/Gemini commented as optional |
+| `agent.py` | Main loop, tool dispatch, context limits, trace, nudges, deterministic `run_java` injection |
+| `tools.py` | All tool implementations, global Java target, in-memory payload store, `inspect_cdm_json`, compile/run |
+| `prompt_blocks.py` | `build_system_prompt(preflight)` — composable instruction blocks |
+| `tools.json` | LLM-facing function schemas (15 tools including `finish`) |
+| `schema_index.py` | Lazy index over `schemas/jsonschema/*.schema.json` — type ↔ file, Java FQN from filename, enums |
+| `openrouter_client.py` | HTTP client mimicking `openai`’s `chat.completions.create` for OpenRouter |
 
-**Packaging:** There is **no** `pyproject.toml` / `setup.py` in tree; the project is used as a **source tree on `PYTHONPATH`** (see `scripts/run_fpml_mapping_to_java.py` inserting repo root) or via a local venv (`.venv` present).
+Public API (`java_gen/__init__.py`): `run_agent`, `AgentConfig`, `AgentResult`, plus `SchemaIndex` re-export from `schema_index` in the package’s historical surface.
 
 ---
 
-## 3. End-to-end data flow
+## 3. Core loop (`_run_agent_impl`)
 
-### 3.1 Deterministic core
+1. **Java target** is already set by `run_agent` via `set_java_generation_target(cdm_json_path, java_class_name)`:
+   - Class/file name defaults from **CDM JSON filename stem** → PascalCase (`json_stem_to_java_class_name`), unless `java_class_name` is passed (e.g. FpML pipeline uses FpML stem).
+   - Tools resolve `filename=None` / legacy `CdmTradeBuilder` names to the **active** target.
 
-1. **Adapter detection** (`fpml_cdm/adapters/registry.py`): under `<trade>`, picks registered product by **local name** + **priority** (`fxForward`, `fxSingleLeg`, `fxOption`, `fxSwap`).
-2. **Parse** (`parser.py` + `ruleset_engine.py`): maps XML → normalized dataclasses (`NormalizedFxForward`, `NormalizedFxSwap`, `NormalizedFxOption` in `types.py`), with optional **recovery mode** and ruleset-driven candidate paths.
-3. **Rulesets** (`rulesets.py`): per-`adapter_id` dicts of field → **candidate XPath-like paths**, parsers, derived flags; patches applied via `apply_ruleset_patch`.
-4. **Transform** (`transformer.py` + `transformers/*`): normalized model → CDM JSON (`transform_to_cdm_v6` dispatches on `normalizedKind`).
-5. **Validate** (`validator.py`): schema + semantic comparison to source FpML; produces `ValidationReport` / `ValidationIssue` codes (`SCHEMA_VALIDATION_FAILED`, `SEMANTIC_VALIDATION_FAILED`, etc.).
+2. **Preflight**: `inspect_cdm_json(cdm_json_path, detail="full")` runs **before** the first LLM call (wrapped in try/except; on failure, `PREFLIGHT_ALL_BLOCKS` is used so prompts still load).
 
-### 3.2 Optional LLM on parse (not the mapping agent)
+3. **Scaling**: `total_nodes` from inspect drives `scale_java_gen_config_for_node_count` — raises `max_iterations`, `max_tool_calls`, `timeout_seconds` for trades with many tree nodes (>150 / >400 thresholds).
 
-`convert_fpml_to_cdm(..., llm_provider=…)` uses `LLMFieldEnricher` (`llm_enricher.py`) when parse leaves **recoverable** issues (`MISSING_REQUIRED_FIELD`, `INVALID_VALUE`). Providers come from `llm/base.py`: `none`, `gemini`, `openai_compat` (e.g. Ollama). This is **text completion**, not OpenAI-style tool calling.
+4. **System prompt**: `build_system_prompt(preflight)` — not a static string; optional blocks depend on reference counts, location warnings, date/FX heuristics, `preflight_large_trade` (see §6).
 
-### 3.3 Mapping compliance stage (on `convert`)
+5. **Bootstrap write**: Before iteration 0, the agent **writes `get_java_template()`’s template** to the active file via `write_java_file`. This ensures **placeholders** exist so `patch_java_file` strategies work; failures are swallowed so the model can still `write_java_file` a full file.
 
-`pipeline.py::_apply_mapping_compliance_stage`:
+6. **Initial user message** fixes: CDM path, class/file name, `rosetta-validator/generated/`, compile/run expectations.
 
-- Scores **deterministic** CDM: schema errors, semantic errors, **Rosetta** failures (if JAR/Java available).
-- If `mapping_llm_client` + `mapping_model` are set, runs **`run_mapping_agent`** and replaces output CDM with agent’s **best-so-far** JSON while keeping original normalized model from deterministic parse for reference.
-- Fills `ConversionResult.compliance` (deterministic vs agent scores, `rosetta_report`) and optional `review_ticket` for manual triage.
+7. **Each iteration**:
+   - Enforce **prompt budget** (`_presend_compact_messages`) if `FPML_JAVA_GEN_MAX_PROMPT_CHARS > 0` — replaces largest tool messages with stored stubs (details §7.3).
+   - Call LLM with full message history + `tools` from `load_tool_specs()`.
+   - If **no tool calls**: append short trace (`text`), increment **text-only** handling; on first occurrence append a **nudge** user message demanding at least one tool call; `continue`.
+   - For each tool call: increment `total_tool_calls`, append trace (`tool_call`), handle **`finish`** early return, else `_execute_tool` → JSON string → **`prepare_tool_result_for_llm`** (per-tool size cap, inspect tree split; §7.2 / §7.10) → append `tool` message.
+   - **Loop detection**: same tool + same serialized args **3 times** → wrap result with a warning (repeat counter reset).
+   - **Single-patch loop**: if `patch_java_file` with **one** patch in a row **≥3** times, inject a **batch patch** warning (once per run, flag `patch_loop_nudge_sent`).
+   - **`compile_java` success** → **deterministic** synthetic assistant `tool_calls` + `tool` result for **`run_java`** (active class, timeout 30) — does **not** wait for the model to call `run_java`.
+   - If **`run_java` succeeded this iteration** (parsed from trace): append user message telling the model to **`finish`** with success and `java_file`.
+   - Timeout / max tool calls / max iterations → `_agent_result_exhausted` (§8).
 
-### 3.4 FpML → Java (library)
-
-`fpml_to_cdm_java.generate_java_from_fpml`:
-
-- `convert_fpml_to_cdm` (strict, no parse LLM).
-- If compliant: use that CDM; else if mapping enabled: **`run_mapping_agent`**; else skip mapping and use best-effort deterministic CDM.
-- Writes `generated_expected_cdm.json` under `output_dir` (default `tmp`).
-- Runs **`java_gen.agent.run_agent`** on that file.
-
-CLI mirrors this: `generate-java-from-fpml`.
+**Note:** `AgentConfig.match_threshold` exists (default 95.0) but is **not read** inside `agent.py`; matching semantics are whatever the model puts in `finish` or trace-based fallbacks.
 
 ---
 
-## 4. “Agents” in this repo (four different concepts)
+## 4. Tool surface vs implementation
 
-### 4.1 Mapping agent (`fpml_cdm/mapping_agent/`)
-
-- **Entry:** `run_mapping_agent(fpml_path, llm_client, model, config=MappingAgentConfig, …)`.
-- **Mechanism:** OpenAI-compatible **`chat.completions.create` with `tools`** (same pattern as Java agent). Client must expose `.chat.completions.create` (OpenRouter wrapper in `java_gen/openrouter_client.py` or OpenAI SDK).
-- **Tools** (`mapping_agent/tools.py` + `registry.py`): `inspect_fpml_trade`, `list_supported_fx_adapters`, `get_active_ruleset_summary`, **`run_conversion_with_patch`**, `validate_best_effort`.
-- **Seeding:** Before any LLM call, evaluates **all supported adapter candidates** with **base rulesets**, picks best tuple `(schema_err, semantic_err, [rosetta_fail])`.
-- **Loop:** LLM proposes **patches** to rulesets; execution is **fully deterministic** after the patch. Best CDM updated only when score improves. Stops on zero errors (including Rosetta when enabled), timeout, max tool calls, or `semantic_no_improve_limit`.
-- **Config:** `MappingAgentConfig`: `max_iterations`, `max_tool_calls`, `timeout_seconds`, `semantic_no_improve_limit`, `enable_rosetta`, `rosetta_timeout_seconds`.
-
-### 4.2 Java generation agent (`fpml_cdm/java_gen/`)
-
-- **Entry:** `run_agent(cdm_json_path, llm_client, model, config=AgentConfig, java_class_name=…)`.
-- **Tools** (`tools.py`, specs in `tools.json`): inspect CDM JSON, schema lookup, template read/write, **patch** Java, **compile_java**, **run_java**, **validate_output** vs expected JSON, `finish`.
-- **Output path:** **`rosetta-validator/generated/<ClassName>.java`** (`GENERATED_DIR` in `tools.py`). Class name from CDM JSON stem or FpML stem when passed from pipeline.
-- **Config scaling:** `scale_java_gen_config_for_node_count` bumps iterations/tool calls/timeouts for large CDM trees.
-- **Success:** Explicit `finish` tool or heuristic success if `run_java` exited 0 (see `_agent_result_exhausted`).
-
-### 4.3 Enrichment “agents” (`fpml_cdm/agents/`)
-
-These are **not** a unified orchestrator; they are **composable steps** gated by `EnrichmentConfig` in `agents/enrichment.py`:
-
-- **LEI:** `lei_resolver.py` + `data/lei/bic_to_lei.json`
-- **Taxonomy:** `taxonomy.py` (deterministic, NDF rules, optional LLM)
-- **CDM address indirection:** `cdm_address_refactor.py`
-- **Diff/fix:** `cdm_diff_fix.py` (`run_diff_fix_agent` with optional LLM)
-
-`convert_fpml_to_cdm(..., enrichment=EnrichmentConfig(...))` wires parse-time and post-transform enrichment (only exercised when callers pass `enrichment`; CLI `convert` does not expose all of this today).
-
-### 4.4 External orchestration scripts
-
-- **`scripts/run_fpml_mapping_to_java.py`**: intended **3-phase** runner (optional parser enrichment → mapping agent → Java agent), OpenRouter/OpenAI, optional Rosetta patch to force-disable in tools when `--rosetta` not passed.
-- **Bug / gap:** it imports **`fpml_cdm.parser_enrichment`** (`ParserEnrichmentConfig`, `run_parser_enrichment`), but **that module does not exist** in the tree. Using `--enrich-parser` would fail at import or runtime until implemented.
+- **`tools.json`** defines **15** tools for the LLM (same names as in tests’ ordered list: introspection, file I/O, compile/run, validate, payload paging, **`finish`**).
+- **`TOOL_DISPATCH`** lists **15** names (including **`finish`**). For **`finish`**, the loop **short-circuits** before `_execute_tool`: it never invokes the `finish()` Python function for the LLM turn, and instead builds **`AgentResult`** from the tool arguments (`status`, `summary`, `java_file`, `match_percentage`). The other **14** tools go through `_execute_tool` → JSON string to the model.
+- **`diff_json`** in `tools.py` is **not** exposed in `tools.json` or `TOOL_DISPATCH` — programmatic / future use only (e.g. comparing expected vs actual JSON outside the agent).
 
 ---
 
-## 5. CLI surface (`python -m fpml_cdm`)
+## 5. Key tools (behavioral specifics)
 
-| Command | Purpose |
-|---------|---------|
-| `parse` | FpML → normalized JSON |
-| `transform` | normalized JSON → CDM JSON |
-| `validate` | FpML + CDM semantic/schema report |
-| `validate-schema` | JSON-only schema check |
-| `validate-rosetta` | CDM vs Rosetta (needs JAR + Java) |
-| `convert` | Full convert + optional parse LLM + optional **mapping** provider (`--mapping-provider` openrouter/openai) + compliance/review outputs |
-| `generate-java` | CDM JSON → Java agent |
-| `generate-java-from-fpml` | Mapping + Java agent; writes `mapping_trace.json` under `--output-dir` |
+### `inspect_cdm_json`
 
-Default LLM for mapping/Java in argparse is often **`minimax/minimax-m2.5`** on OpenRouter; keys from `.env` (`OPENROUTER_API_KEY`).
+- Walks `trade` (or root) with schema-aware recursion from **Trade** schema.
+- Emits a **lossless** `tree` list (every node: `json_path`, `cdm_type`, `schema_ref`, `java_class`, leaves with values, enums).
+- Builds **`type_registry`**: every unique `schema_ref` → `import_statement`, `builder_entry`, `is_enum`.
+- **`reference_patterns_sample`** (capped) + **`reference_pattern_total`**: classifies `address` / `globalReference` / `externalReference` with **recommended builder calls** (e.g. `setGlobalReference` for DOCUMENT-scope address).
+- **`location_array_warnings`**: MetaFields `.location` paths — **Key** vs **MetaFields** trap.
+- **`java_type_warnings`**: `JAVA_TYPE_OVERRIDES` for known JSON-vs-Java date/string mismatches.
+- `detail` is **ignored for data omission** — comment says compaction is agent-layer only.
 
----
+### `lookup_cdm_schema` / `resolve_java_type` / `list_enum_values`
 
-## 6. Rosetta validator bridge
+- Backed by `SchemaIndex`: filename → Java FQN via **`_java_class_from_filename`** convention.
+- Property-level **`setter_hint`** / **`setter_note`**: critical for **Reference** schema — `address` → `setGlobalReference`, not nested `Reference.builder()`.
 
-- **`fpml_cdm/rosetta_validator.py`**: subprocess to JAR, stdin/temp file JSON, parses failure list.
-- **Maven:** `rosetta-validator/pom.xml`, `cdm-java` **6.7.0**, Java **11**.
-- **Makefile:** `make rosetta-build`, `validate-rosetta-sample`, `generate-java` (writes trace to `tmp/trace.json`).
+### File tools
 
----
+- **`write_java_file`**: `rosetta-validator/generated/<name>.java`.
+- **`read_java_file`**: full content (can be huge — subject to oversize stubbing).
+- **`patch_java_file`**: single `old_text`/`new_text` or **`patches` array**; exact replace first, then **normalized whitespace** match (strip trailing per line); ambiguous normalized matches error; may return **`suggested_old_text`**.
 
-## 7. Tests (high level)
+### `compile_java` / `run_java`
 
-- `tests/test_parser.py`, `test_transformer.py`, `test_pipeline.py`, `test_validator.py`
-- `tests/test_agents.py` — LEI, taxonomy, addresses, diff-fix
-- `tests/test_adapters.py`
-- `tests/test_java_gen/` — agent, tools, schema index, OpenRouter client
-- `tests/test_mapping_agent_real_llm_integration.py` — real API integration (documented plan in `tests/mapping_agent_real_llm_integration_plan.md`)
-- `tests/test_rosetta_validator.py`, `test_fpml_to_java_from_fpml.py`, etc.
+- **`javac`** with classpath `JAR;generated` (Windows `;`, else `:`).
+- Errors parsed into structured list; **repeated_error_patterns** / **batch_fix_required** when the same normalized message repeats.
+- **`run_java`**: `java -cp ... <class>`; stdout truncated in result; **`stdout_is_valid_json`** flag.
 
-Run: `make test` or `python -m unittest discover -s tests -p "test_*.py"`.
+### `validate_output`
 
----
+- Delegates to `fpml_cdm.validator.validate_cdm_official_schema` on the `trade` object.
 
-## 8. Git / docs state (observed)
+### Payload tools
 
-- Branch naming in status: **`ft/mapping-agent`**.
-- Several markdown files were **deleted** in the working tree (`README.md`, `ARCHITECTURE.md`, `CLAUDE.md`, `plan.md`, `docs/*`, `trace.json` per initial snapshot)—this research file is a replacement inventory for navigation.
+- **`store_large_payload`**, **`fetch_payload`**, **`compact_context`**: in-memory handle store and **character-offset** paging (default `limit` 16_000). Full behavioral spec and failure modes: **§7**.
 
 ---
 
-## 9. Summary: orchestrator reality vs aspiration
+## 6. System prompt (`prompt_blocks.py`)
 
-- There is **no single central “orchestrator” class** that registers all agents. Orchestration is **procedural**: `cli.py` → `pipeline.py` / `fpml_to_cdm_java.py` / `run_fpml_mapping_to_java.py`, with two prominent **ReAct+tools** loops (mapping, Java) and a separate **enrichment** subsystem.
-- **Strengths:** Clear split between **deterministic** conversion and **LLM-constrained** search (ruleset patches only for mapping); Java loop grounded in **compile/run**.
-- **Pain points:** **Duplicate generated Java locations**, **tmp** and **script/CLI** overlap, **missing `parser_enrichment` module** referenced by scripts, large **corpus/schema** trees mixed with code, and **`.agent` skill** content potentially drifting from `fpml_cdm` behavior if not updated together.
+- **Always**: CORE (imports from **only** `well_known_imports`, `type_registry`, `list_enum_values`), PATCH, STRATEGY, CONVENTIONS, NESTED_BUILDERS, EFFICIENCY, RESPONSE, RULES_END.
+- **Conditional**:
+  - **`LARGE_TRADE_ALERT`** if `preflight_large_trade` (driven by node count vs `FPML_JAVA_GEN_FULL_INSPECT_MAX_NODES`, default 200).
+  - **`LOCATIONS_KEY`** if `location_array_warnings` non-empty.
+  - **`REFS_DOC`** if `reference_pattern_total > 0`.
+  - **`DATES`** if java type warnings or certain `type_summary` keys.
+  - **`UNDERLIER_FX`** if Settlement/Forward/Fx-related types or registry heuristics.
+
+This ties **static CDM/Rosetta traps** (ReferenceWithMeta packages, MetaFields vs Key, dates) to **actual JSON shape** when possible.
 
 ---
 
-## 10. Quick reference: main entry points
+## 7. Context compaction — how it really works (deep dive)
 
-| Goal | Where to start |
-|------|----------------|
-| Library convert | `fpml_cdm.pipeline.convert_fpml_to_cdm` |
-| Mapping loop | `fpml_cdm.mapping_agent.agent.run_mapping_agent` |
-| Java loop | `fpml_cdm.java_gen.agent.run_agent` |
-| FpML→CDM→Java | `fpml_cdm.fpml_to_cdm_java.generate_java_from_fpml` or CLI `generate-java-from-fpml` |
-| Rosetta | `fpml_cdm.rosetta_validator.validate_cdm_rosetta` or CLI `validate-rosetta` |
+The word **“compact”** in this codebase names two different things: the **`compact_context` tool** (paging a stored payload) and **pre-send “compaction”** (`_presend_compact_messages`, which replaces whole tool messages with stubs). They share the same **in-memory payload store** (`_PAYLOAD_STORE` in `tools.py`) but are triggered by **different rules**. Neither path **summarizes** or **compresses** JSON semantically — only **externalizes** full strings behind handles or drops them from the visible transcript in favor of a stub.
+
+### 7.1 Data flow (where each hook runs)
+
+On **every** LLM request, **before** `chat.completions.create`:
+
+1. **`_presend_compact_messages(messages)`** runs if `FPML_JAVA_GEN_MAX_PROMPT_CHARS > 0` (default **0 = disabled**). It may rewrite **historical** `role: "tool"` messages in place.
+
+On **each tool result** returned to the model (right after `_execute_tool`):
+
+2. **`prepare_tool_result_for_llm(fn_name, raw_result_str)`** runs (public surface includes **`maybe_store_oversized_tool_result_for_llm`**, which returns only the string). See **§7.10** for inspect **envelope + tree split** and **`FPML_JAVA_GEN_MAX_TOOL_BYTES`**.
+
+Optional **auto first tree chunk:** if **`FPML_JAVA_GEN_AUTO_TREE_CHUNK_CHARS` > 0** and inspect used a tree split, the loop injects one synthetic **`compact_context`** round-trip in the same turn.
+
+Otherwise there is **no** automatic paging: recovery is up to the model calling **`compact_context` / `fetch_payload`**.
+
+### 7.2 Mechanism A — per-tool cap (`prepare_tool_result_for_llm`)
+
+**Location:** `agent.py` (`prepare_tool_result_for_llm`, `maybe_store_oversized_tool_result_for_llm`, alias `compact_tool_result_for_llm`).
+
+**Threshold:** If **`FPML_JAVA_GEN_MAX_TOOL_BYTES` > 0**, compare **UTF-8 byte length** of `result_str` to that limit. Otherwise use **`FPML_JAVA_GEN_MAX_TOOL_CHARS`** (default **120_000**) as **Python `len(str)`** (character count).
+
+**When under cap:** The exact `result_str` is returned; `_append_tool_io_log` logs raw and sent as identical.
+
+**When over cap:**
+
+1. `store_large_payload(kind=f"{fn_name}:oversize", payload_json=result_str)` copies the **entire** tool output string into `_PAYLOAD_STORE` under a new **handle** (`{kind}:{ms_since_epoch}:{sha256_16}`).
+2. The model receives a **different** JSON object, roughly:
+   - `stored: true`, `handle`, `sha256`, `bytes` (see §7.4 for the `bytes` naming quirk), `tool`, `next_step` instructing `compact_context` or `fetch_payload`.
+
+**Same-turn NOTICE (tool path):** After tool execution, the loop may append a **user** `NOTICE` that depends on outcome: **tree split** (inspect envelope inline, tree externalized), **full oversize stub**, or generic **`stored: true`**. **Presend** is handled separately: if presend stubbed before the LLM call, a **distinct** one-line NOTICE is appended then (prompt budget), not conflated with tool-cap wording.
+
+### 7.3 Mechanism B — pre-send prompt budget (`_presend_compact_messages`)
+
+**Location:** `agent.py` (`_presend_compact_messages`, `_stub_tool_content_for_prompt_budget`, `_message_list_utf8_bytes`).
+
+**Activation:** Only if `FPML_JAVA_GEN_MAX_PROMPT_CHARS` is set to a **positive** integer (default **0** → function returns immediately, no changes).
+
+**Budget metric:** `_message_list_utf8_bytes` sums **UTF-8 byte lengths** of string fields on each message: `content`, `name`, `tool_call_id`, `role`, plus `json.dumps(tool_calls)`. So the budget is **bytes**, not Python `len(str)`.
+
+**Algorithm:** While total UTF-8 bytes `> max(0, max_prompt_chars - headroom)`:
+
+1. Among **stub-eligible** tool messages (see **§7.10**: protect last **N** with a carve-out so a single tool message can still be stubbed), pick a **victim**: prefer **`read_java_file`**-shaped JSON (`path` + `content` + `lines`) and **`compile_java` failure** JSON (`success: false` + `errors`) over other tools when choosing what to stub first; among that pool (or all eligible if none match), pick the **largest UTF-8** `content`. Replace with `_stub_tool_content_for_prompt_budget`.
+
+2. Repeat until under budget or **guard** aborts. If **`FPML_JAVA_GEN_LOG_PRESEND_ABORT`** is set, log when the guard stops or the list is still over budget after stubbing.
+
+**Important:** This **mutates** `messages` in place across iterations. On turn *t* the model may see full tool output; on turn *t+1*, `_presend_compact_messages` may **replace** that tool message with a stub **before** the next API call. The **next** request then no longer contains the full JSON — only the handle — so the model must **re-fetch** via tools to have the text in context again.
+
+### 7.4 Payload store (`store_large_payload` / `fetch_payload` / `compact_context`)
+
+**Location:** `tools.py` (`_PAYLOAD_STORE`, `store_large_payload`, `fetch_payload`, `compact_context`).
+
+- **Scope:** Single Python process, **in-memory** only. Handles are meaningless after process exit; tests call `reset_payload_store()` for isolation.
+- **Stored value:** The full string `payload_json` (tool results are JSON text; presend stores the exact prior tool `content` string).
+- **Handle:** Includes timestamp to reduce collisions for equal prefixes.
+- **Return field `bytes`:** In `store_large_payload`, `bytes` is `len(payload_json.encode("utf-8"))` — UTF-8 size of the **whole** payload. It is **not** the length of the current chunk.
+- **Paging axes:** `fetch_payload` and `compact_context` slice with `payload[offset : offset + limit]` — **Python string indices** (0-based **characters**, not UTF-8 bytes). The response includes `total_chars: len(payload)` (accurate name). Provenance flags named `bytes_omitted_before_this_chunk` / `bytes_omitted_after_this_chunk` are really **“content omitted”** in **characters**, not bytes — naming is misleading for non-ASCII.
+
+**`done` flag:** `done = (offset + limit >= len(payload))`. Last chunk may be shorter than `limit`.
+
+**`compact_context`:** Thin wrapper over `fetch_payload` that adds `provenance` and `next_step`. The suggested continuation is `offset + len(chunk)` (character-accurate). Using a fixed `offset += limit` is equivalent **whenever** `not done` implies `len(chunk) == limit` (true for interior chunks).
+
+### 7.5 Recursive stubbing (large `compact_context` results)
+
+`prepare_tool_result_for_llm` wraps **every** tool, including **`compact_context`** and **`fetch_payload`**. A single chunk (~16k chars) plus JSON wrapper can still exceed `MAX_TOOL_CHARS` if you raise limits or add huge metadata. In that case the **chunk itself** is stored again under a **new** handle, and the model sees a stub pointing to **another** handle. Nothing in code prevents this chain; the model must chase handles.
+
+### 7.6 Why hallucinations spike when compaction is on (code-aligned)
+
+1. **Truth is removed from the prompt:** After stubbing, the model’s **input** for the next call no longer contains the tree/schema text — only a handle and short instructions. Correct behavior requires **calling `compact_context` / `fetch_payload` enough times** to reconstruct needed facts. If the model skips that and writes Java anyway, it will **invent** paths, types, or imports — the system prompt forbids that (`prompt_blocks.py` “Truth boundary”), but that is **policy**, not enforcement.
+
+2. **No structured “plan” of what to page:** The stub does not list json_paths or type names; the model must guess **which** offsets to read or read **sequentially** through a huge JSON — expensive in tool calls and easy to stop early.
+
+3. **`inspect_cdm_json` is especially large:** The lossless `tree` dominates size. **Tree split** (§7.10) keeps **envelope** fields inline when only the tree exceeds the cap; hallucination risk is lower than a **full** inspect stub.
+
+4. **Presend victim selection** now uses **UTF-8 size** for the largest-message tie-break, aligned with the byte budget.
+
+5. **Budget loop may give up:** If stubbing four-ish passes per message count still leaves the list over budget, the code **breaks** and sends an oversized request anyway.
+
+6. **NOTICE wording:** Tool-path and presend NOTICEs are **split** in current code (see §7.10).
+
+7. **Trace vs chat:** `trace` only keeps `result_preview` (**first 500 characters**) of each tool result — debugging from trace alone **hides** stubbed payloads entirely if the stub is short and the rest only in `messages`.
+
+### 7.7 Prompt / tool spec (patch nudge)
+
+The patch-loop nudge in `agent.py` tells the model to call **`read_java_file`** for the **full** generated file (no line-range API on that tool).
+
+### 7.8 Telemetry and OpenRouter
+
+- **`tool_io.jsonl`** (repo root): every tool result logs **raw** vs **sent** strings and lengths (`_append_tool_io_log`). Useful to confirm whether the model saw a stub.
+- **`FPML_JAVA_GEN_LOG_TOOL_BYTES`:** stderr lines for raw vs outgoing sizes per tool.
+- **OpenRouter:** Optional `FPML_OPENROUTER_LOG_REQUEST_BYTES`; retries via `FPML_OPENROUTER_*`.
+
+### 7.9 Tests that lock behavior
+
+- `tests/test_java_gen/test_compact_context.py`: round-trip paging with `compact_context` until `done`; presend budget reduces UTF-8 size and leaves a `context_stub` handle on a stubbed tool message.
+- `tests/test_java_gen/test_compact_envelope.py`: inspect **envelope + tree** split, **MAX_TOOL_BYTES** path, envelope-still-too-big fallback, presend **deprioritize** `read_java_file`-shaped JSON.
+
+### 7.10 Enhancements (implementation summary)
+
+- **`prepare_tool_result_for_llm`:** Central entry for tool-size policy; returns `(string, meta)` with `tree_split` / `oversize_full`.
+- **Inspect tree split:** Store `json.dumps(tree)` under `inspect_cdm_json:tree`; LLM sees all inspect keys **except** `tree`, plus `tree_handle`, `tree_stored`, `storage_mode: inspect_tree_only`, and shared `handle` for paging.
+- **`FPML_JAVA_GEN_MAX_TOOL_BYTES`:** Optional UTF-8 byte cap; if unset, behavior matches legacy **`MAX_TOOL_CHARS`**.
+- **`FPML_JAVA_GEN_AUTO_TREE_CHUNK_CHARS`:** Optional same-turn synthetic `compact_context` for the first tree slice.
+- **Presend:** `FPML_JAVA_GEN_PRESEND_PROTECT_LAST_TOOLS` (default 3) with **at least one** stubbable tool when multiple exist; deprioritize read_java / compile-error JSON; victim size by UTF-8 bytes; `FPML_JAVA_GEN_LOG_PRESEND_ABORT` for diagnostics.
+- **NOTICE:** Separate messages for presend (before LLM), tree split, full tool stub, and generic `stored`.
+
+---
+
+## 8. Termination and `AgentResult`
+
+| Path | `success` | Notes |
+|------|-----------|--------|
+| `finish` tool | `fn_args["status"] == "success"` | `java_file`, `match_percentage`, `summary` from args |
+| Timeout / max iterations / max tool calls | Usually **false** | `_agent_result_exhausted` |
+| Exhausted **but** trace has **`run_java` success + exit 0** | **true** | “Closing as success because run_java…”; `java_file` from last successful `write_java_file` preview or `rosetta-validator/generated/<active>` |
+
+Trace entries: `preflight`, `text`, `tool_call`, `tool_result` (with **`result_preview` first 500 chars only** — full tool content lives in `messages`, not trace).
+
+---
+
+## 9. Integration points
+
+- **`fpml_cdm/cli.py`**: `cmd_generate_java` — OpenRouter (default) or OpenAI SDK, `AgentConfig` from CLI, optional `--java-class`, trace JSON output.
+- **`fpml_to_cdm_java.generate_java_from_fpml`**: Writes CDM JSON to `tmp/generated_expected_cdm.json`, then `run_agent` with class name from FpML stem unless overridden.
+- **`scripts/run_fpml_mapping_to_java.py`**: Similar orchestration.
+
+---
+
+## 10. Design tensions (intentional)
+
+1. **Template overwrite at start** vs agent full rewrite — favors patch workflows; may clobber a previous good file at each run.
+2. **Deterministic `run_java` after compile** — ensures execution feedback even if the model forgets; doubles as extra tool call count.
+3. **Lossless inspect** + **hard caps / presend stubbing** — the runtime does not auto-page; see **§7.6** for why stubs correlate with hallucinated structure when the model skips retrieval.
+4. **Preflight runs full inspect** — for huge trades, preflight itself can be large; scaling bumps limits rather than truncating inspect in `tools.py`.
+
+---
+
+## 11. Related tests
+
+- `tests/test_java_gen/test_agent.py`: mock LLM, scale config, preflight prompt, oversize stub, deterministic `run_java`, tool list parity.
+- `tests/test_java_gen/test_tools.py`: tool semantics, patch, compile, etc.
+- `tests/test_java_gen/test_compact_context.py`: paging/provenance.
+- `tests/test_java_gen/test_openrouter_client.py`: HTTP client behavior.
+
+---
+
+## 12. Quick reference — environment variables
+
+See `fpml_cdm/java_gen/ENV_VARS.md` for Java-gen limits; OpenRouter has separate `FPML_OPENROUTER_*` variables in `openrouter_client.py`. `OPENROUTER_API_KEY` is required for default CLI path.
+
+---
+
+*Generated from codebase review of `fpml_cdm/java_gen` and related tests/CLI — April 2026.*

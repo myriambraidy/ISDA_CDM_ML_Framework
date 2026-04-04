@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .prompt_blocks import PREFLIGHT_ALL_BLOCKS, build_system_prompt
 from .tools import (
@@ -24,6 +24,9 @@ from .tools import (
     compile_java,
     run_java,
     validate_output,
+    store_large_payload,
+    fetch_payload,
+    compact_context,
     finish,
     set_java_generation_target,
     reset_java_generation_target,
@@ -168,147 +171,227 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def compact_tool_result_for_llm(fn_name: str, result_str: str) -> str:
-    """Shrink tool JSON strings before they are appended to the LLM message list."""
-    max_tool = _env_int("FPML_JAVA_GEN_MAX_TOOL_CHARS", 120_000)
-    max_read = _env_int("FPML_JAVA_GEN_MAX_READ_JAVA_CHARS", 48_000)
-    max_compile_msg = _env_int("FPML_JAVA_GEN_MAX_COMPILE_MSG_CHARS", 600)
-    max_compile_errors = _env_int("FPML_JAVA_GEN_MAX_COMPILE_ERRORS", 35)
-    max_stderr = _env_int("FPML_JAVA_GEN_MAX_COMPILE_STDERR_CHARS", 2_500)
-    max_stdout = _env_int("FPML_JAVA_GEN_MAX_RUN_JAVA_STDOUT_CHARS", 48_000)
-    max_lookup_props = _env_int("FPML_JAVA_GEN_MAX_LOOKUP_PROPERTIES", 80)
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
+
+def _append_tool_io_log(*, tool: str, raw: str, sent: str) -> None:
+    """Append raw vs sent tool strings to tool_io.jsonl (debug)."""
     try:
-        payload = json.loads(result_str)
-    except json.JSONDecodeError:
-        if len(result_str) > max_tool:
-            return json.dumps(
-                {
-                    "_truncated": True,
-                    "_preview": result_str[: max_tool // 2],
-                    "_hint": "Tool result exceeded FPML_JAVA_GEN_MAX_TOOL_CHARS (non-JSON).",
-                }
-            )
-        return result_str
+        root = Path(__file__).resolve().parents[2]
+    except Exception:
+        root = Path(".")
+    path = root / "tool_io.jsonl"
+    try:
+        ent = {
+            "ts_ms": int(time.time() * 1000),
+            "tool": tool,
+            "raw_chars": len(raw),
+            "sent_chars": len(sent),
+            "raw": raw,
+            "sent": sent,
+        }
+        path.open("a", encoding="utf-8").write(json.dumps(ent, ensure_ascii=False) + "\n")
+    except Exception:
+        return
 
-    if not isinstance(payload, dict):
-        out = json.dumps(payload, default=str)
-        if len(out) > max_tool:
-            return json.dumps(
-                {
-                    "_truncated": True,
-                    "_type": type(payload).__name__,
-                    "_hint": "Serialized tool result exceeded FPML_JAVA_GEN_MAX_TOOL_CHARS.",
-                }
-            )
-        return out
 
-    if fn_name == "read_java_file" and isinstance(payload.get("content"), str):
-        content = payload["content"]
-        if len(content) > max_read:
-            lines = content.splitlines()
-            head_n, tail_n = 120, 120
-            if len(lines) > head_n + tail_n:
-                head = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(head_n))
-                ts = len(lines) - tail_n
-                tail = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(ts, len(lines)))
-                omitted = len(lines) - head_n - tail_n
-                payload["content"] = (
-                    f"{head}\n... [{omitted} lines omitted] ...\n{tail}"
+def _max_tool_budget() -> Tuple[bool, int]:
+    """(use_utf8_bytes, limit). If FPML_JAVA_GEN_MAX_TOOL_BYTES > 0, use UTF-8 byte length vs that limit."""
+    mb = _env_int("FPML_JAVA_GEN_MAX_TOOL_BYTES", 0)
+    if mb > 0:
+        return (True, mb)
+    return (False, _env_int("FPML_JAVA_GEN_MAX_TOOL_CHARS", 120_000))
+
+
+def _tool_result_size(s: str, *, use_utf8_bytes: bool) -> int:
+    return len(s.encode("utf-8")) if use_utf8_bytes else len(s)
+
+
+def _tool_over_budget(s: str, *, use_utf8_bytes: bool, limit: int) -> bool:
+    return _tool_result_size(s, use_utf8_bytes=use_utf8_bytes) > limit
+
+
+def prepare_tool_result_for_llm(fn_name: str, result_str: str) -> Tuple[str, Dict[str, bool]]:
+    """Cap tool JSON for the LLM: pass-through, inspect envelope+tree split, or full lossless stub.
+
+    Returns (string_for_llm, meta) where meta may set tree_split, oversize_full.
+    """
+    meta: Dict[str, bool] = {"tree_split": False, "oversize_full": False}
+    use_bytes, limit = _max_tool_budget()
+    if not _tool_over_budget(result_str, use_utf8_bytes=use_bytes, limit=limit):
+        _append_tool_io_log(tool=fn_name, raw=result_str, sent=result_str)
+        return result_str, meta
+
+    if fn_name == "inspect_cdm_json":
+        try:
+            data = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            data = None
+        if isinstance(data, dict) and "tree" in data:
+            envelope = {k: v for k, v in data.items() if k != "tree"}
+            tree_payload = json.dumps(data["tree"], ensure_ascii=False, default=str)
+            st_tree = store_large_payload(kind="inspect_cdm_json:tree", payload_json=tree_payload)
+            if st_tree.get("success") is True:
+                out_obj: Dict[str, object] = {
+                    **envelope,
+                    "tree_stored": True,
+                    "tree_handle": st_tree.get("handle"),
+                    "tree_total_chars": len(tree_payload),
+                    "tree_sha256": st_tree.get("sha256"),
+                    "stored": True,
+                    "handle": st_tree.get("handle"),
+                    "storage_mode": "inspect_tree_only",
+                    "next_step": (
+                        "Envelope (type_registry, warnings, reference hints, etc.) is inline above; "
+                        "the structural `tree` JSON is stored under tree_handle / handle. "
+                        "Call compact_context(tree_handle, offset, limit) or fetch_payload(tree_handle, offset, limit) "
+                        "to page the tree (character offsets). Do not invent json_paths without reading it."
+                    ),
+                }
+                out_str = json.dumps(out_obj, ensure_ascii=False, default=str)
+                if not _tool_over_budget(out_str, use_utf8_bytes=use_bytes, limit=limit):
+                    meta["tree_split"] = True
+                    _append_tool_io_log(tool=fn_name, raw=result_str, sent=out_str)
+                    return out_str, meta
+
+    stored = store_large_payload(kind=f"{fn_name}:oversize", payload_json=result_str)
+    meta["oversize_full"] = True
+    cap_name = (
+        "FPML_JAVA_GEN_MAX_TOOL_BYTES"
+        if use_bytes
+        else "FPML_JAVA_GEN_MAX_TOOL_CHARS"
+    )
+    out = json.dumps(
+        {
+            "tool": fn_name,
+            "stored": True,
+            "handle": stored.get("handle"),
+            "sha256": stored.get("sha256"),
+            "bytes": stored.get("bytes"),
+            "next_step": (
+                f"Payload exceeded {cap_name}; stored losslessly. "
+                "Call compact_context(handle, offset, limit) or fetch_payload(handle, offset, limit) to read bytes."
+            ),
+        }
+    )
+    _append_tool_io_log(tool=fn_name, raw=result_str, sent=out)
+    return out, meta
+
+
+def maybe_store_oversized_tool_result_for_llm(fn_name: str, result_str: str) -> str:
+    """Backward-compatible: cap tool output for LLM; returns string only."""
+    out, _ = prepare_tool_result_for_llm(fn_name, result_str)
+    return out
+
+
+# Backward-compatible alias
+compact_tool_result_for_llm = maybe_store_oversized_tool_result_for_llm
+
+
+def _message_list_utf8_bytes(messages: List[Dict[str, object]]) -> int:
+    total = 0
+    for m in messages:
+        for key in ("content", "name", "tool_call_id", "role"):
+            v = m.get(key)
+            if isinstance(v, str):
+                total += len(v.encode("utf-8"))
+        tc = m.get("tool_calls")
+        if tc is not None:
+            total += len(json.dumps(tc, default=str).encode("utf-8"))
+    return total
+
+
+def _stub_tool_content_for_prompt_budget(original: str) -> str:
+    stored = store_large_payload(kind="presend:tool_message", payload_json=original)
+    return json.dumps(
+        {
+            "stored": True,
+            "context_stub": True,
+            "handle": stored.get("handle"),
+            "sha256": stored.get("sha256"),
+            "bytes": stored.get("bytes"),
+            "next_step": "Call compact_context or fetch_payload with this handle to recover exact bytes.",
+        }
+    )
+
+
+def _tool_message_deprioritize_for_presend(content: str) -> bool:
+    """True for bulky low-signal tool JSON we prefer to stub before inspect/enums."""
+    try:
+        d = json.loads(content)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(d, dict):
+        return False
+    if "content" in d and "path" in d and "lines" in d:
+        return True
+    if d.get("success") is False and d.get("errors"):
+        return True
+    return False
+
+
+def _pick_presend_victim_index(messages: List[Dict[str, object]], protected: set[int]) -> int:
+    tool_indices: List[int] = [
+        i for i, m in enumerate(messages) if m.get("role") == "tool" and i not in protected
+    ]
+    if not tool_indices:
+        return -1
+    deprio = [
+        i
+        for i in tool_indices
+        if isinstance(messages[i].get("content"), str)
+        and _tool_message_deprioritize_for_presend(str(messages[i]["content"]))
+    ]
+    pool = deprio if deprio else tool_indices
+
+    def _utf8_sz(i: int) -> int:
+        c = messages[i].get("content")
+        return len(c.encode("utf-8")) if isinstance(c, str) else 0
+
+    return max(pool, key=_utf8_sz)
+
+
+def _presend_compact_messages(messages: List[Dict[str, object]]) -> bool:
+    """Shrink message list toward FPML_JAVA_GEN_MAX_PROMPT_CHARS (UTF-8). Returns True if any stub applied."""
+    max_chars = _env_int("FPML_JAVA_GEN_MAX_PROMPT_CHARS", 0)
+    if max_chars <= 0:
+        return False
+    headroom = _env_int("FPML_JAVA_GEN_PROMPT_HEADROOM_CHARS", 0)
+    budget = max(0, max_chars - headroom)
+    protect_n = max(0, _env_int("FPML_JAVA_GEN_PRESEND_PROTECT_LAST_TOOLS", 3))
+    stubbed_any = False
+    guard = 0
+    while _message_list_utf8_bytes(messages) > budget:
+        guard += 1
+        if guard > max(len(messages) * 4, 4):
+            if _env_flag("FPML_JAVA_GEN_LOG_PRESEND_ABORT"):
+                sys.stderr.write(
+                    f"  [java_gen] presend: abort after {guard - 1} pass(es); "
+                    f"utf8_bytes={_message_list_utf8_bytes(messages)} budget={budget}\n"
                 )
-                payload["truncated"] = True
-        result_str = json.dumps(payload, default=str)
-
-    elif fn_name == "get_java_template" and isinstance(payload.get("template"), str):
-        tpl = payload["template"]
-        if len(tpl) > max_read:
-            lines = tpl.splitlines()
-            head_n, tail_n = 80, 80
-            if len(lines) > head_n + tail_n:
-                head = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(head_n))
-                ts = len(lines) - tail_n
-                tail = "\n".join(f"{i + 1:6d}|{lines[i]}" for i in range(ts, len(lines)))
-                omitted = len(lines) - head_n - tail_n
-                payload["template"] = f"{head}\n... [{omitted} lines omitted] ...\n{tail}"
-                payload["truncated"] = True
-        result_str = json.dumps(payload, default=str)
-
-    elif fn_name == "compile_java":
-        errs = payload.get("errors")
-        if isinstance(errs, list):
-            trimmed: List[object] = []
-            for e in errs[:max_compile_errors]:
-                if isinstance(e, dict):
-                    e = dict(e)
-                    msg = e.get("message")
-                    if isinstance(msg, str) and len(msg) > max_compile_msg:
-                        e["message"] = msg[:max_compile_msg] + "…"
-                trimmed.append(e)
-            payload["errors"] = trimmed
-            if len(errs) > max_compile_errors:
-                payload["errors_truncated"] = True
-                payload["errors_omitted_count"] = len(errs) - max_compile_errors
-        rs = payload.get("raw_stderr")
-        if isinstance(rs, str) and len(rs) > max_stderr:
-            payload["raw_stderr"] = rs[:max_stderr] + "…"
-        result_str = json.dumps(payload, default=str)
-
-    elif fn_name == "run_java":
-        so = payload.get("stdout")
-        if isinstance(so, str) and len(so) > max_stdout:
-            payload["stdout"] = so[:max_stdout] + "…"
-            payload["stdout_truncated"] = True
-        se = payload.get("stderr")
-        if isinstance(se, str) and len(se) > max_stderr:
-            payload["stderr"] = se[:max_stderr] + "…"
-        result_str = json.dumps(payload, default=str)
-
-    elif fn_name == "lookup_cdm_schema" and "properties" in payload:
-        props = payload.get("properties")
-        if isinstance(props, dict) and len(props) > max_lookup_props:
-            keys = list(props.keys())[:max_lookup_props]
-            payload["properties"] = {k: props[k] for k in keys}
-            payload["properties_truncated"] = True
-            payload["properties_omitted_count"] = len(props) - max_lookup_props
-        result_str = json.dumps(payload, default=str)
-
-    elif fn_name == "validate_output":
-        errs = payload.get("errors")
-        if isinstance(errs, list) and len(errs) > max_compile_errors:
-            payload["errors"] = errs[:max_compile_errors]
-            payload["errors_truncated"] = True
-            payload["errors_omitted_count"] = len(errs) - max_compile_errors
-        result_str = json.dumps(payload, default=str)
-
-    elif fn_name == "inspect_cdm_json" and len(result_str) > max_tool:
-        # Belt-and-suspenders: drop registry values to one line each if still huge
-        tr = payload.get("type_registry")
-        if isinstance(tr, dict):
-            slim: Dict[str, object] = {}
-            for k, v in list(tr.items())[:200]:
-                if isinstance(v, dict):
-                    slim[k] = {
-                        "java_class": v.get("java_class"),
-                        "simple_name": v.get("simple_name"),
-                        "import_statement": v.get("import_statement"),
-                    }
-                else:
-                    slim[k] = v
-            payload["type_registry"] = slim
-            payload["type_registry_truncated"] = True
-        result_str = json.dumps(payload, default=str)
-
-    if len(result_str) > max_tool:
-        return json.dumps(
-            {
-                "tool": fn_name,
-                "_truncated": True,
-                "_original_chars": len(result_str),
-                "_preview": result_str[: max_tool // 2],
-                "_hint": "Result exceeded FPML_JAVA_GEN_MAX_TOOL_CHARS after compaction.",
-            }
+            break
+        tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+        if not tool_indices:
+            break
+        # Leave at least one tool message stubbable when multiple exist; with a single tool msg, allow stubbing it.
+        n_protect = min(protect_n, max(0, len(tool_indices) - 1))
+        protected = set(tool_indices[-n_protect:]) if n_protect > 0 else set()
+        best_idx = _pick_presend_victim_index(messages, protected)
+        if best_idx < 0:
+            break
+        orig = messages[best_idx]["content"]
+        assert isinstance(orig, str)
+        messages[best_idx]["content"] = _stub_tool_content_for_prompt_budget(orig)
+        stubbed_any = True
+    if stubbed_any and _message_list_utf8_bytes(messages) > budget and _env_flag(
+        "FPML_JAVA_GEN_LOG_PRESEND_ABORT"
+    ):
+        sys.stderr.write(
+            f"  [java_gen] presend: still over budget after stubbing; "
+            f"utf8_bytes={_message_list_utf8_bytes(messages)} budget={budget}\n"
         )
-    return result_str
+    return stubbed_any
 
 
 def _format_tool_call_short(fn_name: str, fn_args: Dict[str, object]) -> str:
@@ -391,6 +474,9 @@ TOOL_DISPATCH: Dict[str, Callable[..., Dict[str, object]]] = {
     "compile_java": compile_java,
     "run_java": run_java,
     "validate_output": validate_output,
+    "store_large_payload": store_large_payload,
+    "fetch_payload": fetch_payload,
+    "compact_context": compact_context,
     "finish": finish,
 }
 
@@ -452,23 +538,43 @@ def _run_agent_impl(
         log_progress = sys.stderr.isatty()
     preflight: Dict[str, object] = {}
     try:
+        inspect_mode = os.environ.get("FPML_JAVA_GEN_INSPECT_DETAIL", "auto")
+        full_max_nodes = _env_int("FPML_JAVA_GEN_FULL_INSPECT_MAX_NODES", 200)
         preflight = inspect_cdm_json(cdm_json_path, detail="full")
         total_nodes_raw = preflight.get("total_nodes", 0)
-        if isinstance(total_nodes_raw, int):
-            config = scale_java_gen_config_for_node_count(config, total_nodes_raw)
+        total_nodes = int(total_nodes_raw) if isinstance(total_nodes_raw, int) else 0
+        preflight["inspect_detail_mode"] = inspect_mode
+        preflight["full_inspect_max_nodes"] = full_max_nodes
+        preflight["preflight_large_trade"] = bool(total_nodes > full_max_nodes)
+        if isinstance(total_nodes, int) and total_nodes:
+            config = scale_java_gen_config_for_node_count(config, total_nodes)
             if log_progress:
                 sys.stderr.write(
-                    f"  [java_gen] total_nodes={total_nodes_raw} -> "
+                    f"  [java_gen] total_nodes={total_nodes} "
+                    f"preflight_large_trade={preflight['preflight_large_trade']} full_max_nodes={full_max_nodes} -> "
                     f"max_iterations={config.max_iterations} "
                     f"max_tool_calls={config.max_tool_calls} "
                     f"timeout_seconds={config.timeout_seconds}\n"
                 )
     except Exception:
         preflight = dict(PREFLIGHT_ALL_BLOCKS)
+
     system_prompt_effective = build_system_prompt(preflight)
     tool_specs = load_tool_specs()
     start_time = time.time()
     trace: List[Dict[str, object]] = []
+    try:
+        trace.append(
+            {
+                "type": "preflight",
+                "preflight_large_trade": preflight.get("preflight_large_trade"),
+                "inspect_detail_mode": preflight.get("inspect_detail_mode"),
+                "full_inspect_max_nodes": preflight.get("full_inspect_max_nodes"),
+                "total_nodes": preflight.get("total_nodes"),
+            }
+        )
+    except Exception:
+        pass
     total_tool_calls = 0
     consecutive_single_patches = 0
     patch_loop_nudge_sent = False
@@ -507,6 +613,9 @@ def _run_agent_impl(
     ]
 
     for iteration in range(config.max_iterations):
+        any_stored_this_turn = False
+        turn_tree_split = False
+        turn_oversize_full = False
         elapsed = time.time() - start_time
         if elapsed > config.timeout_seconds:
             return _agent_result_exhausted(
@@ -528,6 +637,17 @@ def _run_agent_impl(
 
         if log_progress:
             sys.stderr.write(f"  [iter {iteration+1}] waiting for LLM...\n")
+        if _presend_compact_messages(messages):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "NOTICE: Prompt budget (FPML_JAVA_GEN_MAX_PROMPT_CHARS) replaced one or more older "
+                        "tool messages with stored handles (context_stub=true). Use compact_context or "
+                        "fetch_payload with the handle to retrieve exact bytes before relying on that data."
+                    ),
+                }
+            )
         t0_llm = time.perf_counter()
         response = llm_client.chat.completions.create(  # type: ignore[union-attr]
             model=model,
@@ -609,8 +729,12 @@ def _run_agent_impl(
             if log_progress:
                 sys.stderr.write(f"    {_format_tool_call_short(fn_name, fn_args)}\n")
             t0_tool = time.perf_counter()
-            result_str = _execute_tool(fn_name, fn_args)
-            result_str = compact_tool_result_for_llm(fn_name, result_str)
+            raw_result_str = _execute_tool(fn_name, fn_args)
+            result_str, prep_meta = prepare_tool_result_for_llm(fn_name, raw_result_str)
+            if prep_meta.get("tree_split"):
+                turn_tree_split = True
+            if prep_meta.get("oversize_full"):
+                turn_oversize_full = True
             t1_tool = time.perf_counter()
             total_tool_time += t1_tool - t0_tool
             if log_progress:
@@ -643,6 +767,121 @@ def _run_agent_impl(
             })
             last_tool_name = fn_name
             last_tool_result_str = result_str
+            try:
+                if json.loads(result_str).get("stored") is True:
+                    any_stored_this_turn = True
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            if fn_name == "inspect_cdm_json" and prep_meta.get("tree_split"):
+                auto_lim = _env_int("FPML_JAVA_GEN_AUTO_TREE_CHUNK_CHARS", 0)
+                if auto_lim > 0:
+                    try:
+                        _ins = json.loads(result_str)
+                        th = _ins.get("tree_handle") or _ins.get("handle")
+                        if isinstance(th, str) and th:
+                            _chunk = compact_context(th, offset=0, limit=auto_lim)
+                            chunk_str = json.dumps(_chunk, ensure_ascii=False, default=str)
+                            chunk_str, _ = prepare_tool_result_for_llm("compact_context", chunk_str)
+                            syn_id = f"auto_tree_chunk_{total_tool_calls}"
+                            messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "type": "function",
+                                            "id": syn_id,
+                                            "function": {
+                                                "name": "compact_context",
+                                                "arguments": json.dumps(
+                                                    {"handle": th, "offset": 0, "limit": auto_lim}
+                                                ),
+                                            },
+                                        }
+                                    ],
+                                }
+                            )
+                            messages.append(
+                                {"role": "tool", "tool_call_id": syn_id, "content": chunk_str}
+                            )
+                            total_tool_calls += 1
+                            trace.append(
+                                {
+                                    "iteration": iteration,
+                                    "type": "tool_call",
+                                    "tool": "compact_context",
+                                    "args": {
+                                        "handle": th,
+                                        "offset": 0,
+                                        "limit": auto_lim,
+                                        "auto_injected": True,
+                                    },
+                                }
+                            )
+                            trace.append(
+                                {
+                                    "iteration": iteration,
+                                    "type": "tool_result",
+                                    "tool": "compact_context",
+                                    "result_preview": chunk_str[:500],
+                                }
+                            )
+                            if log_progress:
+                                sys.stderr.write("    [deterministic] compact_context (auto tree chunk)\n")
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        pass
+            if _env_flag("FPML_JAVA_GEN_LOG_TOOL_BYTES"):
+                try:
+                    raw_bytes = len(raw_result_str.encode("utf-8"))
+                except Exception:
+                    raw_bytes = -1
+                try:
+                    out_bytes = len(result_str.encode("utf-8"))
+                except Exception:
+                    out_bytes = -1
+                stored_b = False
+                try:
+                    d = json.loads(result_str)
+                    stored_b = bool(d.get("stored") is True)
+                except Exception:
+                    pass
+                sys.stderr.write(
+                    f"      [tool_bytes] {fn_name} raw={raw_bytes} out={out_bytes} stored={stored_b}\n"
+                )
+
+        if turn_tree_split:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "NOTICE: inspect_cdm_json returned with the structural tree externalized (tree_handle). "
+                        "Type registry, reference hints, and warnings are inline in that tool result—page the tree "
+                        "with compact_context(tree_handle, offset, limit) only as needed. Do not invent json_paths."
+                    ),
+                }
+            )
+        elif turn_oversize_full:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "NOTICE: A tool result exceeded the tool output cap (FPML_JAVA_GEN_MAX_TOOL_CHARS or "
+                        "FPML_JAVA_GEN_MAX_TOOL_BYTES). Full payload is behind handle; use compact_context or "
+                        "fetch_payload before writing code that depends on that data. Do not guess missing structure."
+                    ),
+                }
+            )
+        elif any_stored_this_turn:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "NOTICE: A tool result used external storage (stored=true). Retrieve exact bytes with "
+                        "compact_context(handle, offset, limit) or fetch_payload before relying on that data."
+                    ),
+                }
+            )
 
         if consecutive_single_patches >= 3 and not patch_loop_nudge_sent:
             messages.append({
@@ -650,7 +889,7 @@ def _run_agent_impl(
                 "content": (
                     "WARNING: You have called patch_java_file repeatedly with single-patch calls only. "
                     "This wastes iterations. STOP patching one fix at a time. Instead:\n"
-                    "1. Call read_java_file (optionally with line range) to find ALL occurrences of the same pattern.\n"
+                    "1. Call read_java_file to load the full generated file and find ALL occurrences of the same pattern.\n"
                     "2. Fix ALL instances in ONE patch_java_file call using the patches array.\n"
                     "3. Then call compile_java once.\n\n"
                     "If replacing setReference(Reference.builder()...) with setGlobalReference(...), "
@@ -666,7 +905,7 @@ def _run_agent_impl(
                 if compile_res.get("success") is True:
                     det_class = get_active_java_class_name()
                     run_result = run_java(class_name=det_class, timeout=30)
-                    run_result_str = compact_tool_result_for_llm(
+                    run_result_str, _ = prepare_tool_result_for_llm(
                         "run_java", json.dumps(run_result, default=str)
                     )
                     id_run = "call_det_run"

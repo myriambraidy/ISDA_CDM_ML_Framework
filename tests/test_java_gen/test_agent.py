@@ -16,6 +16,7 @@ from fpml_cdm.java_gen.agent import (
     load_tool_specs,
     run_agent,
     scale_java_gen_config_for_node_count,
+    maybe_store_oversized_tool_result_for_llm,
     TOOL_DISPATCH,
     SYSTEM_PROMPT,
 )
@@ -26,9 +27,9 @@ from fpml_cdm.java_gen.tools import json_stem_to_java_class_name
 
 class ToolsJsonTests(unittest.TestCase):
 
-    def test_loads_all_12_tools(self) -> None:
+    def test_loads_all_tools(self) -> None:
         specs = load_tool_specs()
-        self.assertEqual(len(specs), 12)
+        self.assertEqual(len(specs), 15)
 
     def test_each_spec_has_function_key(self) -> None:
         specs = load_tool_specs()
@@ -62,6 +63,9 @@ class ToolsJsonTests(unittest.TestCase):
             "compile_java",
             "run_java",
             "validate_output",
+            "store_large_payload",
+            "fetch_payload",
+            "compact_context",
             "finish",
         ]
         self.assertEqual(names, expected)
@@ -104,6 +108,39 @@ class ScaleJavaGenConfigTests(unittest.TestCase):
         self.assertEqual(out.max_iterations, 35)
         self.assertEqual(out.max_tool_calls, 100)
         self.assertEqual(out.timeout_seconds, 600)
+
+
+class PreflightLargeTradeTests(unittest.TestCase):
+
+    def test_preflight_large_trade_flag(self) -> None:
+        from fpml_cdm.java_gen.prompt_blocks import build_system_prompt
+
+        s = build_system_prompt(
+            {
+                "total_nodes": 500,
+                "preflight_large_trade": True,
+                "reference_pattern_total": 0,
+                "location_array_warnings": [],
+                "type_summary": {"Trade": 1},
+                "java_type_warnings": [],
+                "type_registry": {},
+                "enums_used": [],
+            }
+        )
+        self.assertIn("Large trade", s)
+
+    def test_oversized_tool_stub_has_no_tree(self) -> None:
+        import json
+        import os
+        from unittest.mock import patch
+
+        huge = {"tree": [{"x": 1}], "pad": "x" * 200_000}
+        s = json.dumps(huge)
+        with patch.dict(os.environ, {"FPML_JAVA_GEN_MAX_TOOL_CHARS": "500"}):
+            out = maybe_store_oversized_tool_result_for_llm("inspect_cdm_json", s)
+        d = json.loads(out)
+        self.assertTrue(d.get("stored"))
+        self.assertNotIn("tree", d)
 
 
 # ── Mock LLM client ──────────────────────────────────────────────────

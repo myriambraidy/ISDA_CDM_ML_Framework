@@ -58,6 +58,24 @@ These are DIFFERENT packages — never mix them.
 
 If you need a type not in any of the three sources above, call `resolve_java_type` FIRST
 before writing any import for it.
+
+## Truth boundary (anti-hallucination)
+You only know CDM structure and imports from **tool outputs** and from **compact_context** / **fetch_payload**
+chunks you retrieve. Never invent `json_path` values, types, packages, or enum constants from memory.
+
+## Large payloads
+If a tool returns `stored: true` and a **handle**, the full JSON was saved losslessly. Call
+`compact_context(handle, offset, limit)` (recommended; includes provenance) or `fetch_payload` for raw paging.
+**FPML_JAVA_GEN_MAX_TOOL_CHARS** (or **FPML_JAVA_GEN_MAX_TOOL_BYTES** when set) is a hard ceiling on each tool message.
+
+For **`inspect_cdm_json`**, when only the structural **`tree`** is oversized, the agent may keep an **inline envelope**
+(`type_registry`, `reference_patterns_sample`, warnings, `type_summary`, etc.) and store **only the tree** under
+`tree_handle` / `handle` with `storage_mode: "inspect_tree_only"`. Page the tree with `compact_context(tree_handle, …)`.
+
+## IMPORTANT
+If the conversation would exceed the model context window, the agent may externalize large blobs
+behind handles. If you see a tool result stub containing a **handle**, call
+`compact_context` or `fetch_payload` to retrieve the exact bytes you need (lossless paging).
 """
 
 IMPORT_TAIL = ""
@@ -146,8 +164,7 @@ STRATEGY = """\
 ## Strategy
 
 Follow this workflow:
-1. Call `inspect_cdm_json` first (default response omits the deep `tree` — use **type_summary** and
-   `lookup_cdm_schema` per type for structure; use `detail=\"full\"` only for debugging).
+1. Call `inspect_cdm_json` first (returns a full, lossless structural view).
    - **type_registry**: pre-resolved imports and builders — do NOT call `resolve_java_type` for types already listed.
    - **well_known_imports** + **well_known_imports_note** — mandatory import sources.
    - **reference_patterns_sample** + **reference_api_note** — exact builder_call patterns for refs.
@@ -295,6 +312,10 @@ def _registry_refs_lowercase(preflight: Mapping[str, object]) -> List[str]:
     return [str(k).lower() for k in reg]
 
 
+def _preflight_large_trade(preflight: Mapping[str, object]) -> bool:
+    return preflight.get("preflight_large_trade") is True
+
+
 def _need_underlier_fx(preflight: Mapping[str, object]) -> bool:
     keys = _type_summary_keys(preflight)
     for k in (
@@ -315,6 +336,12 @@ def _need_underlier_fx(preflight: Mapping[str, object]) -> bool:
     return False
 
 
+LARGE_TRADE_ALERT = """\
+## Large trade (preflight)
+This trade has many nodes (`preflight_large_trade`). Expect more tool calls: page inspect output with
+`compact_context` / `fetch_payload`, batch schema lookups, and avoid single-line patches.
+"""
+
 def build_system_prompt(preflight: Optional[MutableMapping[str, object]] = None) -> str:
     """Assemble system prompt from preflight inspect_cdm_json output."""
     p: Mapping[str, object] = preflight or {}
@@ -322,6 +349,8 @@ def build_system_prompt(preflight: Optional[MutableMapping[str, object]] = None)
         CORE,
         IMPORT_TAIL,
     ]
+    if _preflight_large_trade(p):
+        parts.append(LARGE_TRADE_ALERT)
     if _truthy_location_warnings(p):
         parts.append(LOCATIONS_KEY)
     if _reference_total(p) > 0:

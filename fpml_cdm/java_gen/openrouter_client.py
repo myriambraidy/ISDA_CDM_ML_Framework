@@ -6,10 +6,13 @@ import json
 import logging
 import os
 import sys
+import time
+import random
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 import requests
+from requests import exceptions as req_exc
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +77,37 @@ class _Completions:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
 
+    def _env_int(self, name: str, default: int) -> int:
+        try:
+            return int(os.environ.get(name, str(default)))
+        except ValueError:
+            return default
+
+    def _post_with_retries(self, *, url: str, body_bytes: bytes, headers: dict, timeout: float) -> requests.Response:
+        max_retries = self._env_int("FPML_OPENROUTER_MAX_RETRIES", 5)
+        base_sleep_ms = self._env_int("FPML_OPENROUTER_RETRY_BASE_MS", 400)
+        max_sleep_ms = self._env_int("FPML_OPENROUTER_RETRY_MAX_MS", 6_000)
+        jitter_ms = self._env_int("FPML_OPENROUTER_RETRY_JITTER_MS", 250)
+
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return requests.post(url, data=body_bytes, headers=headers, timeout=timeout)
+            except (req_exc.SSLError, req_exc.ConnectionError, req_exc.Timeout) as exc:
+                last_exc = exc
+                if attempt >= max_retries:
+                    raise
+                sleep_ms = min(max_sleep_ms, base_sleep_ms * (2**attempt))
+                sleep_ms += random.randint(0, max(0, jitter_ms))
+                if _env_flag("FPML_OPENROUTER_LOG_RETRIES"):
+                    sys.stderr.write(
+                        f"[openrouter] retry attempt={attempt+1}/{max_retries} "
+                        f"sleep_ms={sleep_ms} error={type(exc).__name__}: {exc}\n"
+                    )
+                time.sleep(sleep_ms / 1000.0)
+        assert last_exc is not None
+        raise last_exc
+
     def create(
         self,
         model: str,
@@ -116,7 +150,12 @@ class _Completions:
             nbytes,
         )
 
-        resp = requests.post(url, data=payload_json.encode("utf-8"), headers=headers, timeout=self._timeout)
+        resp = self._post_with_retries(
+            url=url,
+            body_bytes=payload_json.encode("utf-8"),
+            headers=headers,
+            timeout=self._timeout,
+        )
 
         if not resp.ok:
             body = resp.text or ""

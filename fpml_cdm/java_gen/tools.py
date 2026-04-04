@@ -10,6 +10,8 @@ import json
 import platform
 import re
 import subprocess
+import hashlib
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
@@ -32,6 +34,118 @@ _JAVA_TARGET: Dict[str, str] = {
     "class_name": _DEFAULT_JAVA_CLASS,
     "filename": _DEFAULT_JAVA_FILENAME,
 }
+
+# ── In-memory payload store for handle-based paging ───────────────────
+#
+# Goal: never truncate tool outputs; instead return a handle and allow the
+# LLM/agent to fetch exact bytes later.
+_PAYLOAD_STORE: Dict[str, Dict[str, object]] = {}
+
+
+def reset_payload_store() -> None:
+    """Clear the in-memory payload store (tests / isolation)."""
+    _PAYLOAD_STORE.clear()
+
+
+def _make_handle(*, kind: str, payload: str) -> str:
+    h = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    # include time to avoid collisions across different payloads with same prefix
+    return f"{kind}:{int(time.time()*1000)}:{h}"
+
+
+def store_large_payload(kind: str, payload_json: str) -> Dict[str, object]:
+    """Store an arbitrary JSON string and return a handle for later retrieval."""
+    if not isinstance(payload_json, str):
+        return {"success": False, "error": "payload_json must be a string"}
+    handle = _make_handle(kind=kind, payload=payload_json)
+    sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    _PAYLOAD_STORE[handle] = {
+        "kind": kind,
+        "payload_json": payload_json,
+        "sha256": sha256,
+        "bytes": len(payload_json.encode("utf-8")),
+    }
+    return {
+        "success": True,
+        "handle": handle,
+        "kind": kind,
+        "sha256": sha256,
+        "bytes": _PAYLOAD_STORE[handle]["bytes"],
+    }
+
+
+def fetch_payload(handle: str, offset: int = 0, limit: int = 16_000) -> Dict[str, object]:
+    """Fetch a slice of a stored payload by handle."""
+    ent = _PAYLOAD_STORE.get(handle)
+    if ent is None:
+        return {"success": False, "error": f"Unknown handle: {handle}"}
+    payload = ent.get("payload_json", "")
+    if not isinstance(payload, str):
+        return {"success": False, "error": f"Corrupt store entry for handle: {handle}"}
+    if offset < 0:
+        offset = 0
+    if limit <= 0:
+        limit = 1
+    chunk = payload[offset : offset + limit]
+    done = offset + limit >= len(payload)
+    return {
+        "success": True,
+        "handle": handle,
+        "kind": ent.get("kind", ""),
+        "sha256": ent.get("sha256", ""),
+        "offset": offset,
+        "limit": limit,
+        "total_chars": len(payload),
+        "done": done,
+        "chunk": chunk,
+    }
+
+
+def compact_context(handle: str, offset: int = 0, limit: int = 16_000) -> Dict[str, object]:
+    """Lossless slice of a stored payload with provenance (same bytes as ``fetch_payload``).
+
+    Use after a tool returned ``stored: true`` and a handle. Does not delete or summarize data;
+    paging is lossless. ``fetch_payload`` is the low-level pager; this adds ``provenance`` and
+    ``next_step`` for the LLM workflow.
+    """
+    fr = fetch_payload(handle, offset=offset, limit=limit)
+    if not fr.get("success"):
+        return {
+            "success": False,
+            "error": fr.get("error", "unknown error"),
+        }
+    chunk = fr.get("chunk", "")
+    done = bool(fr.get("done"))
+    total_chars = fr.get("total_chars", 0)
+    provenance = {
+        "mode": "lossless_slice",
+        "handle": handle,
+        "offset": fr.get("offset", offset),
+        "limit": fr.get("limit", limit),
+        "total_chars": total_chars,
+        "chunk_char_len": len(chunk),
+        "done": done,
+        "bytes_omitted_before_this_chunk": int(fr.get("offset", offset) or 0) > 0,
+        "bytes_omitted_after_this_chunk": not done,
+    }
+    next_step = (
+        "If done is false, call compact_context(handle, offset=offset+len(chunk), limit=limit) "
+        "or fetch_payload with the same parameters. Chunks concatenate to the exact stored string."
+    )
+    return {
+        "success": True,
+        "handle": handle,
+        "kind": fr.get("kind", ""),
+        "sha256": fr.get("sha256", ""),
+        "offset": fr.get("offset", offset),
+        "limit": fr.get("limit", limit),
+        "total_chars": total_chars,
+        "done": done,
+        "chunk": chunk,
+        "provenance": provenance,
+        "next_step": next_step,
+    }
+
 
 
 def json_stem_to_java_class_name(stem: str) -> str:
@@ -305,12 +419,12 @@ def _reference_node_keys(node: dict) -> bool:
 
 # ── Tool 1: inspect_cdm_json ─────────────────────────────────────────
 
-def inspect_cdm_json(json_path: str, detail: str = "compact") -> Dict[str, object]:
+def inspect_cdm_json(json_path: str, detail: str = "full") -> Dict[str, object]:
     """Analyze CDM JSON structure, resolve types via schema $refs.
 
-    ``detail``:
-    - ``compact`` (default): omit deep ``tree``; filtered ``well_known_imports``; smaller LLM payload.
-    - ``full``: full tree and complete ``well_known_imports`` (preflight, tests, debugging).
+    NOTE: This tool is **lossless by default**. It returns the full structural tree and
+    supporting registries. Any compaction for LLM context limits must be handled by the
+    agent via handle-based externalization, not by omitting fields here.
     """
     idx = _get_index()
     raw = Path(json_path).read_text(encoding="utf-8")
@@ -522,28 +636,9 @@ def inspect_cdm_json(json_path: str, detail: str = "compact") -> Dict[str, objec
         "reference_api_note": ref_note if reference_pattern_total["n"] else None,
         "location_array_warnings": location_array_warnings,
     }
-    if detail == "full":
-        return full_result
-
-    compact: Dict[str, object] = {k: v for k, v in full_result.items() if k != "tree"}
-    compact["tree_omitted"] = True
-    compact["trade_top_level_keys"] = sorted(trade.keys()) if isinstance(trade, dict) else []
-    compact["inspect_note"] = (
-        "Deep `tree` omitted to save context. Use type_summary + lookup_cdm_schema(type_name) "
-        "for structure. Use inspect_cdm_json(..., detail='full') only when debugging."
-    )
-    compact["well_known_imports"] = _relevant_well_known_imports(
-        type_registry=type_registry,
-        enums_used=enums_used,
-        type_summary=dict(type_counts),
-        location_array_warnings=location_array_warnings,
-        reference_pattern_total=reference_pattern_total["n"],
-        java_type_warnings=java_type_warnings,
-    )
-    compact["well_known_imports_note"] = (
-        wk_note + " Subset shown; full map in inspect_cdm_json(..., detail='full')."
-    )
-    return compact
+    # Keep `detail` parameter for backward compatibility, but do not omit data.
+    # Any \"compact\" behavior must be implemented at the agent layer.
+    return full_result
 
 
 # ── Tool 2: lookup_cdm_schema ────────────────────────────────────────

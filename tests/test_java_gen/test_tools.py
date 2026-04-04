@@ -111,27 +111,28 @@ class InspectCdmJsonTests(unittest.TestCase):
 
 
 class InspectCdmJsonCompactTests(unittest.TestCase):
+    """``detail`` is legacy; tool returns the same lossless structure (tree included)."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.compact = inspect_cdm_json(str(CDM_FIXTURE))
+        cls.default = inspect_cdm_json(str(CDM_FIXTURE))
         cls.full = inspect_cdm_json(str(CDM_FIXTURE), detail="full")
 
-    def test_compact_omits_tree(self) -> None:
-        self.assertNotIn("tree", self.compact)
-        self.assertTrue(self.compact.get("tree_omitted"))
+    def test_default_includes_tree(self) -> None:
+        self.assertIn("tree", self.default)
+        self.assertIsInstance(self.default["tree"], list)
 
-    def test_compact_smaller_than_full(self) -> None:
-        self.assertLess(len(json.dumps(self.compact)), len(json.dumps(self.full)))
+    def test_default_matches_full_payload_size(self) -> None:
+        self.assertEqual(len(json.dumps(self.default)), len(json.dumps(self.full)))
 
-    def test_compact_keeps_summary_fields(self) -> None:
-        self.assertIn("type_summary", self.compact)
-        self.assertIn("type_registry", self.compact)
-        self.assertIn("total_nodes", self.compact)
-        self.assertEqual(self.compact["total_nodes"], self.full["total_nodes"])
+    def test_default_keeps_summary_fields(self) -> None:
+        self.assertIn("type_summary", self.default)
+        self.assertIn("type_registry", self.default)
+        self.assertIn("total_nodes", self.default)
+        self.assertEqual(self.default["total_nodes"], self.full["total_nodes"])
 
-    def test_compact_filtered_well_known_subset_of_full(self) -> None:
-        cw = self.compact["well_known_imports"]
+    def test_well_known_imports_match_full(self) -> None:
+        cw = self.default["well_known_imports"]
         fw = self.full["well_known_imports"]
         self.assertIsInstance(cw, dict)
         for k, v in cw.items():

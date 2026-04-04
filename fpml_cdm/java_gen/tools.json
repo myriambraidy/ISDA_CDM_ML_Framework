@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "inspect_cdm_json",
-      "description": "CDM JSON summary: type_summary, type_registry, enums_used, ref/location hints. Default omits deep tree; use lookup_cdm_schema per type. detail=full for debug only.",
+      "description": "CDM JSON inspection: full structural tree, type_summary, type_registry, enums_used, ref/location hints, and import guidance. If the serialized result exceeds the max tool message size (FPML_JAVA_GEN_MAX_TOOL_CHARS), the agent returns a stub with stored=true and a handle; retrieve lossless bytes via compact_context or fetch_payload.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -12,11 +12,16 @@
           },
           "detail": {
             "type": "string",
-            "enum": ["compact", "full"],
-            "description": "compact (default): no tree, filtered well_known_imports. full: complete tree and imports."
+            "enum": [
+              "compact",
+              "full"
+            ],
+            "description": "Backward-compatible; inspect always returns the full structural view from this tool. Oversized responses are externalized by the agent with a handle."
           }
         },
-        "required": ["json_path"]
+        "required": [
+          "json_path"
+        ]
       }
     },
     {
@@ -30,7 +35,9 @@
             "description": "CDM type or schema stem (e.g. Trade, SettlementPayout)"
           }
         },
-        "required": ["type_name"]
+        "required": [
+          "type_name"
+        ]
       }
     },
     {
@@ -44,7 +51,9 @@
             "description": "Schema filename from $ref"
           }
         },
-        "required": ["schema_ref"]
+        "required": [
+          "schema_ref"
+        ]
       }
     },
     {
@@ -58,7 +67,9 @@
             "description": "Enum type name"
           }
         },
-        "required": ["enum_name"]
+        "required": [
+          "enum_name"
+        ]
       }
     },
     {
@@ -84,7 +95,9 @@
             "description": "Optional; defaults to active target"
           }
         },
-        "required": ["code"]
+        "required": [
+          "code"
+        ]
       }
     },
     {
@@ -106,18 +119,31 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "old_text": { "type": "string" },
-          "new_text": { "type": "string" },
-          "filename": { "type": "string" },
+          "old_text": {
+            "type": "string"
+          },
+          "new_text": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
           "patches": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "old_text": { "type": "string" },
-                "new_text": { "type": "string" }
+                "old_text": {
+                  "type": "string"
+                },
+                "new_text": {
+                  "type": "string"
+                }
               },
-              "required": ["old_text", "new_text"]
+              "required": [
+                "old_text",
+                "new_text"
+              ]
             }
           }
         }
@@ -142,7 +168,9 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "class_name": { "type": "string" },
+          "class_name": {
+            "type": "string"
+          },
           "timeout": {
             "type": "integer",
             "description": "Seconds (default 30)"
@@ -161,7 +189,83 @@
             "description": "JSON to validate"
           }
         },
-        "required": ["json_string"]
+        "required": [
+          "json_string"
+        ]
+      }
+    },
+    {
+      "name": "store_large_payload",
+      "description": "Store an oversized (or important) JSON string and return a handle for later retrieval (lossless).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "Namespace/kind tag for the stored payload"
+          },
+          "payload_json": {
+            "type": "string",
+            "description": "The exact JSON/text string to store"
+          }
+        },
+        "required": [
+          "kind",
+          "payload_json"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fetch_payload",
+      "description": "Fetch a slice of a previously stored payload by handle (lossless paging).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "handle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Start char offset (default 0)"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Max chars to return (default 16000)"
+          }
+        },
+        "required": [
+          "handle"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "compact_context",
+      "description": "Lossless paging of a stored payload by handle (same bytes as fetch_payload). Use after any tool returned stored=true. Adds provenance and next_step; does not summarize or drop data.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "handle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Start char offset (default 0)"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Max chars to return (default 16000)"
+          }
+        },
+        "required": [
+          "handle"
+        ],
+        "additionalProperties": false
       }
     },
     {
@@ -172,7 +276,10 @@
         "properties": {
           "status": {
             "type": "string",
-            "enum": ["success", "failure"]
+            "enum": [
+              "success",
+              "failure"
+            ]
           },
           "summary": {
             "type": "string"
@@ -184,7 +291,10 @@
             "type": "number"
           }
         },
-        "required": ["status", "summary"]
+        "required": [
+          "status",
+          "summary"
+        ]
       }
     }
   ]
