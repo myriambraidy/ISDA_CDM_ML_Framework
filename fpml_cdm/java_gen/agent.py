@@ -23,6 +23,7 @@ from .tools import (
     patch_java_file,
     compile_java,
     run_java,
+    diff_json,
     validate_output,
     store_large_payload,
     fetch_payload,
@@ -126,6 +127,63 @@ def _last_run_java_succeeded_this_iteration(
     return last_ok is True
 
 
+def _finalize_match_and_verification(
+    *,
+    cdm_json_path: str,
+    last_run_java_stdout: Optional[str],
+    llm_reported_match: float,
+    status_success: bool,
+) -> Tuple[float, Optional[Dict[str, object]]]:
+    """
+    Replace LLM-reported match % with ``diff_json`` vs expected CDM when ``run_java`` stdout exists.
+
+    Also runs ``validate_cdm_structure`` on stdout JSON (summary only).
+    """
+    ver: Dict[str, object] = {"llm_reported_match_percentage": llm_reported_match}
+    if not status_success:
+        ver["skipped"] = "finish_status_not_success"
+        return llm_reported_match, ver
+
+    stdout = (last_run_java_stdout or "").strip()
+    if not stdout:
+        ver["note"] = "no_run_java_stdout_for_verification"
+        return llm_reported_match, ver
+
+    try:
+        diff_res = diff_json(cdm_json_path, last_run_java_stdout or "")
+        mp = float(diff_res.get("match_percentage", 0.0))
+        ver["diff_json"] = {
+            "match_percentage": mp,
+            "match": diff_res.get("match"),
+            "total_leaf_values": diff_res.get("total_leaf_values"),
+            "matched_leaf_values": diff_res.get("matched_leaf_values"),
+            "differences_sample": (diff_res.get("differences") or [])[:5],
+        }
+    except Exception as exc:
+        ver["diff_json"] = {"error": f"{type(exc).__name__}: {exc}"}
+        mp = 0.0
+
+    try:
+        from fpml_cdm.cdm_structure_validator import validate_cdm_structure
+
+        raw_js = (last_run_java_stdout or "").strip()
+        parsed = json.loads(raw_js)
+        if not isinstance(parsed, dict):
+            raise ValueError("stdout JSON root must be an object")
+        rep = validate_cdm_structure(parsed, target_type="trade").to_dict()
+        ecs = rep.get("error_count_by_layer") or {}
+        ver["cdm_structure"] = {
+            "structure_ok": rep.get("structure_ok"),
+            "error_count_total": sum(int(v) for v in ecs.values()) if isinstance(ecs, dict) else None,
+            "rosetta_ran": (rep.get("rosetta") or {}).get("ran"),
+            "rosetta_valid": (rep.get("rosetta") or {}).get("valid"),
+        }
+    except Exception as exc:
+        ver["cdm_structure"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    return mp, ver
+
+
 def _agent_result_exhausted(
     *,
     trace: List[Dict[str, object]],
@@ -133,16 +191,24 @@ def _agent_result_exhausted(
     duration: float,
     iterations_recorded: int,
     reason_summary: str,
+    cdm_json_path: str,
+    last_run_java_stdout: Optional[str],
 ) -> AgentResult:
     """Build result when the main loop ends without an explicit finish tool."""
     match_pct, java_path, summary = _partial_result_from_trace(trace, reason_summary)
     if _trace_has_successful_run_java(trace):
         active_rel = f"rosetta-validator/generated/{get_active_java_filename()}"
         jf = java_path or active_rel
+        final_mp, ver = _finalize_match_and_verification(
+            cdm_json_path=cdm_json_path,
+            last_run_java_stdout=last_run_java_stdout,
+            llm_reported_match=match_pct,
+            status_success=True,
+        )
         return AgentResult(
             success=True,
             java_file=jf,
-            match_percentage=match_pct,
+            match_percentage=final_mp,
             iterations=iterations_recorded,
             total_tool_calls=total_tool_calls,
             duration_seconds=duration,
@@ -151,6 +217,7 @@ def _agent_result_exhausted(
                 f"(java_file: {jf})"
             ),
             trace=trace,
+            verification=ver,
         )
     return AgentResult(
         success=False,
@@ -445,9 +512,11 @@ class AgentResult:
     duration_seconds: float = 0.0
     summary: str = ""
     trace: List[Dict[str, object]] = field(default_factory=list)
+    #: Deterministic ``diff_json`` + ``validate_cdm_structure`` when ``run_java`` stdout was captured.
+    verification: Optional[Dict[str, object]] = None
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        out: Dict[str, object] = {
             "success": self.success,
             "java_file": self.java_file,
             "match_percentage": self.match_percentage,
@@ -456,6 +525,9 @@ class AgentResult:
             "duration_seconds": round(self.duration_seconds, 2),
             "summary": self.summary,
         }
+        if self.verification is not None:
+            out["verification"] = self.verification
+        return out
 
 
 # All optional prompt blocks enabled (for tests and callers that need the legacy string).
@@ -612,6 +684,8 @@ def _run_agent_impl(
         },
     ]
 
+    last_run_java_stdout: Optional[str] = None
+
     for iteration in range(config.max_iterations):
         any_stored_this_turn = False
         turn_tree_split = False
@@ -624,6 +698,8 @@ def _run_agent_impl(
                 duration=elapsed,
                 iterations_recorded=iteration,
                 reason_summary=f"Timeout after {config.timeout_seconds}s",
+                cdm_json_path=cdm_json_path,
+                last_run_java_stdout=last_run_java_stdout,
             )
 
         if total_tool_calls >= config.max_tool_calls:
@@ -633,6 +709,8 @@ def _run_agent_impl(
                 duration=time.time() - start_time,
                 iterations_recorded=iteration,
                 reason_summary=f"Max tool calls ({config.max_tool_calls}) reached",
+                cdm_json_path=cdm_json_path,
+                last_run_java_stdout=last_run_java_stdout,
             )
 
         if log_progress:
@@ -715,21 +793,37 @@ def _run_agent_impl(
 
             if fn_name == "finish":
                 duration = time.time() - start_time
+                llm_m = float(fn_args.get("match_percentage", 0.0))
+                ok_status = fn_args.get("status") == "success"
+                final_mp, ver = _finalize_match_and_verification(
+                    cdm_json_path=cdm_json_path,
+                    last_run_java_stdout=last_run_java_stdout,
+                    llm_reported_match=llm_m,
+                    status_success=ok_status,
+                )
                 return AgentResult(
-                    success=fn_args.get("status") == "success",
+                    success=ok_status,
                     java_file=str(fn_args.get("java_file", "")),
-                    match_percentage=float(fn_args.get("match_percentage", 0.0)),
+                    match_percentage=final_mp,
                     iterations=iteration + 1,
                     total_tool_calls=total_tool_calls,
                     duration_seconds=duration,
                     summary=str(fn_args.get("summary", "")),
                     trace=trace,
+                    verification=ver,
                 )
 
             if log_progress:
                 sys.stderr.write(f"    {_format_tool_call_short(fn_name, fn_args)}\n")
             t0_tool = time.perf_counter()
             raw_result_str = _execute_tool(fn_name, fn_args)
+            if fn_name == "run_java":
+                try:
+                    rj = json.loads(raw_result_str)
+                    if rj.get("success") is True and int(rj.get("exit_code", -1)) == 0:
+                        last_run_java_stdout = str(rj.get("stdout") or "")
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
             result_str, prep_meta = prepare_tool_result_for_llm(fn_name, raw_result_str)
             if prep_meta.get("tree_split"):
                 turn_tree_split = True
@@ -905,6 +999,8 @@ def _run_agent_impl(
                 if compile_res.get("success") is True:
                     det_class = get_active_java_class_name()
                     run_result = run_java(class_name=det_class, timeout=30)
+                    if isinstance(run_result, dict) and run_result.get("success") is True:
+                        last_run_java_stdout = str(run_result.get("stdout") or "")
                     run_result_str, _ = prepare_tool_result_for_llm(
                         "run_java", json.dumps(run_result, default=str)
                     )
@@ -946,4 +1042,6 @@ def _run_agent_impl(
         duration=duration,
         iterations_recorded=config.max_iterations,
         reason_summary=f"Max iterations ({config.max_iterations}) reached without finish",
+        cdm_json_path=cdm_json_path,
+        last_run_java_stdout=last_run_java_stdout,
     )

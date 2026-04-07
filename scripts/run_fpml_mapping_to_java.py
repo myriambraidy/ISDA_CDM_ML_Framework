@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("input", help="Input FpML XML file")
     parser.add_argument("--output-dir", default="tmp/run_pipeline", help="Output directory for artifacts")
     parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider")
-    parser.add_argument("--model", default="minimax/minimax-m2.5", help="LLM model for both mapping + Java agents")
+    parser.add_argument("--model", default="minimax/minimax-m2.7", help="LLM model for both mapping + Java agents")
     parser.add_argument("--mapping-model", default=None, help="Optional mapping-agent model override")
     parser.add_argument("--java-model", default=None, help="Optional Java-codegen model override (default: --model)")
 

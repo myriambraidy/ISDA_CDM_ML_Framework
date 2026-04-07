@@ -276,4 +276,103 @@ See `fpml_cdm/java_gen/ENV_VARS.md` for Java-gen limits; OpenRouter has separate
 
 ---
 
-*Generated from codebase review of `fpml_cdm/java_gen` and related tests/CLI — April 2026.*
+## 13. ISDA CDM JSON validation (mapping agent & `fpml_cdm.validator`)
+
+This section documents how the repo decides whether a **CDM v6 trade JSON** is “valid” in the **FpML → CDM mapping** context: the Python `validator` module, how the **mapping agent** wires it, and how that differs from **Java codegen’s** `validate_output` tool.
+
+### 13.1 What “valid” means here
+
+`ValidationReport.valid` is **true only when `errors` is empty** (`fpml_cdm/validator.py`, `ValidationReport` in `fpml_cdm/types.py`). Errors can carry several `ErrorCode` values; the mapping agent’s **numeric score** for “best CDM” only counts two of them:
+
+- `SCHEMA_VALIDATION_FAILED`
+- `SEMANTIC_VALIDATION_FAILED`
+
+Other codes (e.g. `UNSUPPORTED_PRODUCT`, `MISSING_REQUIRED_FIELD`, `INVALID_VALUE` from a failed FpML parse) still make `valid=False` and appear in `errors`, but **do not** enter `best_schema_error_count` / `best_semantic_error_count` in `run_mapping_agent` (`fpml_cdm/mapping_agent/agent.py`).
+
+### 13.2 Public entry points
+
+| Function | FpML source | Normalized model | Typical caller |
+|----------|-------------|------------------|----------------|
+| `validate_transformation(fpml_path, cdm_obj)` | Re-parses via `parse_fpml_fx(..., strict=True)` | From that parse | CLI `validate`, tests, `validate_conversion_files` |
+| `validate_normalized_and_cdm(normalized, cdm_obj)` | None (caller supplies model) | Explicit `NormalizedFxTrade` | `run_conversion_with_patch`, seeding/scoring in `run_mapping_agent` |
+| `validate_conversion_files(fpml_path, cdm_json_path)` | Same as `validate_transformation` | Same | `validate_best_effort` (via temp file) |
+| `validate_cdm_structure(cdm_json)` | None | N/A | **Unified** CDM-only structural gate: envelope + JSON Schema + Rosetta + supplementary (`fpml_cdm/cdm_structure_validator.py`). Used by Java `validate_output`, CLI `validate-cdm-structure`, mapping tools (`cdm_structure` field). |
+| `validate_cdm_official_schema(trade_dict)` | None | N/A | L1 JSON Schema helper; still used inside `validate_cdm_structure` and legacy `validator` paths |
+
+Helpers: `validate_schema_data` / `validate_schema_file` (project schemas under `schemas/`), `validate_normalized_parsed_dict` (normalized JSON shape by `normalizedKind`). See `docs/CDM_VALIDATION.md` for v6 artifact pinning.
+
+### 13.3 Pipeline inside `validate_transformation` / `validate_normalized_and_cdm`
+
+Both build the same report after the normalized model is fixed:
+
+1. **Normalized JSON schema** — `validate_normalized_parsed_dict(normalized.to_dict())` picks `fpml_fx_forward_parsed.schema.json`, `fpml_fx_swap_parsed.schema.json`, or `fpml_fx_option_parsed.schema.json` from `normalizedKind` (`validator.normalized_parsed_schema_for_kind`). Uses **JSON Schema Draft 2020-12** (`Draft202012Validator`).
+
+2. **CDM Trade JSON Schema (official FINOS bundle)** — `validate_cdm_official_schema(cdm_obj["trade"])` loads `schemas/jsonschema/cdm-event-common-Trade.schema.json` with a **`RefResolver`** so sibling `$ref` files resolve under `schemas/jsonschema/` **without network** (`fpml_cdm/cdm_official_schema.py`). Uses **JSON Schema Draft 4** (`Draft4Validator`) — intentionally different from step 1.
+
+3. **Semantic cross-check** — `_semantic_validation(normalized, cdm_obj)` walks the CDM tree and compares selected fields to the **normalized** Python model. Issues use `SEMANTIC_VALIDATION_FAILED`. A **`MappingScore`** (total checks, matched checks, accuracy %) is computed from the internal `check()` counters in each product-specific validator.
+
+`validate_transformation` **prepends** a strict FpML parse: on `ParserError`, it returns early with those issues only (no schema/semantic stages).
+
+### 13.4 Semantic validators (product-specific, path assumptions)
+
+Semantic logic is **not** a general CDM constraint engine; it encodes **expected shapes** for this repo’s transformer output:
+
+- **`fx_spot_forward_like`** (`_semantic_validation_fx_forward_like`): first `tradeLot[0].priceQuantity[0]`, first `payout`’s `SettlementPayout`, settlement dates, quantities, optional exchange rate in `price`, cash settlement currency, payer/receiver vs `counterparty` role map (with defaults `Party1` / `Party2` when refs missing). Float tolerance: **0.01** for amounts, **0.0001** for rates.
+
+- **`fx_swap`** (`_semantic_validation_fx_swap`): at least **two** payouts and **two** `priceQuantity` entries; near/far value dates and settlement types; leg currencies; optional near/far payer-receiver references with **different default Party expectations** on far leg vs near.
+
+- **`fx_option`** (`_semantic_validation_fx_option`): first payout must contain `OptionPayout`; exercise expiry, `optionType`, strike, buyer/seller vs counterparty map, put/call currencies in first `priceQuantity`.
+
+Unknown `normalized_kind` yields a single semantic error: no validator registered.
+
+### 13.5 Mapping agent tools vs scoring
+
+The mapping agent registers five tools (`fpml_cdm/mapping_agent/agent.py` + `tools.py`):
+
+- **`run_conversion_with_patch`** — applies a structured ruleset patch, `parse_fpml_fx_with_ruleset` (strict off, recovery on), `transform_to_cdm_v6`, then **`validate_normalized_and_cdm`**. Returns `validation_report`, `validation_summary` (`schema_error_count`, `semantic_error_count`, `rosetta_failure_count`), and full `cdm_json`. **Only this tool’s results update** the loop’s `best_key` when the score improves.
+
+- **`validate_best_effort`** — writes `cdm_json` to a temp file and calls **`validate_conversion_files` → `validate_transformation`**. That path uses **`parse_fpml_fx(..., strict=True)`** (legacy tree parser in `fpml_cdm/parser.py`), **not** the ruleset engine. So:
+
+  - Semantic comparison is against whatever **strict legacy parse** produces, which can **differ** from a **ruleset-patched** normalized model the agent is iterating on.
+  - The docstring tells the model to prefer **`run_conversion_with_patch`** when validating after patches — this is why.
+
+`run_conversion_with_patch` and `validate_best_effort` both attach a **`cdm_structure`** field: the full dict from `validate_cdm_structure` (same shape as Java `validate_output`). Legacy `validation_report` / `validate_conversion_files` remains for FpML-bound normalized schema + FX semantics. **`enable_rosetta`** on mapping tools maps to **`run_rosetta`** on `validate_cdm_structure` (when false, the Rosetta layer is skipped for backward compatibility).
+
+**Important:** `validate_best_effort` outcomes **do not** update `best_cdm_json` / `best_key` in the agent loop; only `run_conversion_with_patch` does. The former is for **ad-hoc** validation feedback.
+
+### 13.6 Unified CDM structure validation (`validate_cdm_structure`)
+
+- **Layers**: envelope (top-level `trade` or `tradeState`) → **JSON Schema Draft 04** (`get_trade_schema_validator` / `get_trade_state_schema_validator`) → **Rosetta** JVM (mandatory unless Java/JAR missing or `FPML_CDM_ALLOW_NO_ROSETTA`) → **supplementary** registry (optional hooks).
+- **Report**: `structure_ok`, `issues[]` (JSON Pointer paths), `layer_ok`, `error_count_by_layer`, `rosetta` (`ran`, `valid`, `failures`, …), `metadata.cdm_version` = `"6"`.
+- **FpML mapping stack** (normalized schema + hand semantics) is **orthogonal**: still in `validate_transformation` / `validate_normalized_and_cdm`; use **`cdm_structure`** for “is this CDM JSON structurally sound under v6?”
+
+### 13.7 Java codegen `validate_output`
+
+`fpml_cdm/java_gen/tools.py` → `validate_output` parses JSON and returns **`validate_cdm_structure(...).to_dict()`** — the **same** full report as mapping tools (not a reduced `{valid, errors}` shape). Requires Java + JAR unless `FPML_CDM_ALLOW_NO_ROSETTA` is set (unsafe).
+
+### 13.8 CLI
+
+- `python -m fpml_cdm.cli validate --fpml … --cdm …` → `validate_conversion_files`.
+- `validate-schema` → `validate_schema_data` with `--schema cdm|parsed`.
+- `validate-rosetta` → Rosetta JAR path only (Rosetta-only diagnostic).
+- `validate-cdm-structure <file.json>` → full `validate_cdm_structure` report; exit `2` if infra blocked (no Java/JAR) without `--allow-no-rosetta`.
+
+### 13.9 Practical limitations (learnings)
+
+1. **Two parsers**: ruleset-based normalized model (agent patch loop) vs strict `parse_fpml_fx` (`validate_best_effort` / CLI validate) can disagree on fields → semantic errors can confuse an LLM if it mixes tools without reading the docstrings.
+
+2. **Two JSON Schema drafts**: Draft 4 (CDM official) vs Draft 2020-12 (normalized fixtures) — subtle if you ever unify validators or upgrade dependencies.
+
+3. **Semantic coverage** is **FX-only** and **structure-specific** (indices `[0]`, `SettlementPayout` vs `OptionPayout`). Valid CDM that rearranges legs or uses different payout ordering may **fail semantics** while passing schema and Rosetta.
+
+4. **Scoring blind spot**: parser errors with codes other than the two counted codes still break `valid` but are invisible to the agent’s `(schema_err, semantic_err)` headline counts.
+
+5. **Temp files**: `validate_best_effort` uses `mkstemp` + write; files are not deleted in-tool (OS cleanup); fine for short-lived agent runs.
+
+### 13.10 Related tests
+
+- `tests/test_validator.py`: happy paths, semantic tampering, schema shape, unsupported product (`UNSUPPORTED_PRODUCT`).
+
+---
+
+*Generated from codebase review of `fpml_cdm/java_gen`, `fpml_cdm/validator`, `fpml_cdm/mapping_agent`, and related tests/CLI — April 2026.*

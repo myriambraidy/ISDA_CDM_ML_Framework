@@ -94,7 +94,11 @@ def validate_normalized_parsed_dict(data: Dict[str, Any]) -> List[ValidationIssu
 
 def validate_cdm_official_schema(trade_dict: Dict[str, Any]) -> List[ValidationIssue]:
     """
-    Validate a CDM Trade object against the official FINOS CDM JSON Schemas.
+    Validate a CDM Trade object against the official FINOS CDM JSON Schemas (Draft 04 bundle).
+
+    Used by :func:`fpml_cdm.cdm_structure_validator.validate_cdm_structure` (L1 ``json_schema`` layer)
+    and legacy CLI / FpML flows. For full structural validation (schema + Rosetta + supplementary),
+    use :func:`fpml_cdm.cdm_structure_validator.validate_cdm_structure`.
     """
     try:
         validator = get_trade_schema_validator()

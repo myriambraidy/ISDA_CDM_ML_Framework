@@ -3,6 +3,7 @@
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from fpml_cdm.java_gen.tools import (
     inspect_cdm_json,
@@ -661,17 +662,45 @@ class DiffJsonTests(unittest.TestCase):
 
 class ValidateOutputTests(unittest.TestCase):
 
-    def test_valid_fixture(self) -> None:
+    @patch("fpml_cdm.cdm_structure_validator.validate_cdm_structure")
+    def test_valid_fixture(self, mock_vs: MagicMock) -> None:
         data = CDM_FIXTURE.read_text()
+        mock_vs.return_value.to_dict.return_value = {
+            "structure_ok": True,
+            "metadata": {"cdm_version": "6", "validator": "fpml_cdm.cdm_structure_validator"},
+            "layers_executed": ["envelope", "json_schema", "rosetta"],
+            "layer_ok": {"envelope": True, "json_schema": True, "rosetta": True, "supplementary": True},
+            "error_count_by_layer": {"envelope": 0, "json_schema": 0, "rosetta": 0, "supplementary": 0},
+            "issues": [],
+            "rosetta": {"ran": True, "valid": True, "exit_code": 0, "failure_count": 0, "error": None, "failures": []},
+        }
         result = validate_output(data)
-        self.assertIn("valid", result)
-        self.assertIsInstance(result["errors"], list)
-        self.assertIsInstance(result["error_count"], int)
+        self.assertTrue(result["structure_ok"])
+        self.assertEqual(result["issues"], [])
+        mock_vs.assert_called_once()
 
-    def test_empty_trade_has_errors(self) -> None:
+    @patch("fpml_cdm.cdm_structure_validator.validate_cdm_structure")
+    def test_empty_trade_has_errors(self, mock_vs: MagicMock) -> None:
+        mock_vs.return_value.to_dict.return_value = {
+            "structure_ok": False,
+            "metadata": {"cdm_version": "6", "validator": "fpml_cdm.cdm_structure_validator"},
+            "layers_executed": ["envelope", "json_schema"],
+            "layer_ok": {"envelope": True, "json_schema": False, "rosetta": True, "supplementary": True},
+            "error_count_by_layer": {"envelope": 0, "json_schema": 3, "rosetta": 0, "supplementary": 0},
+            "issues": [
+                {
+                    "layer": "json_schema",
+                    "code": "JSON_SCHEMA_FAILED",
+                    "severity": "error",
+                    "path": "/trade/tradeDate",
+                    "message": "mock",
+                }
+            ],
+            "rosetta": {"ran": False, "valid": None, "exit_code": None, "failure_count": 0, "error": None, "failures": []},
+        }
         result = validate_output('{"trade": {}}')
-        # Empty trade missing required tradeDate
-        self.assertGreater(result["error_count"], 0)
+        self.assertFalse(result["structure_ok"])
+        self.assertGreater(len(result["issues"]), 0)
 
 
 # ── finish ───────────────────────────────────────────────────────────

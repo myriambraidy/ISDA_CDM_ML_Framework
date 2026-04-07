@@ -1306,19 +1306,18 @@ def diff_json(
 # ── Tool 12: validate_output ─────────────────────────────────────────
 
 def validate_output(json_string: str) -> Dict[str, object]:
-    """Validate JSON against the official CDM Trade schema."""
-    from fpml_cdm.validator import validate_cdm_official_schema
+    """
+    Run unified CDM v6 structural validation (envelope + JSON Schema + Rosetta + supplementary).
+
+    Returns the full :class:`fpml_cdm.cdm_structure_validator.CdmStructureReport` as a dict
+    (``structure_ok``, ``issues``, ``rosetta``, ``layer_ok``, …). Requires Java + built
+    ``rosetta-validator`` JAR unless :envvar:`FPML_CDM_ALLOW_NO_ROSETTA` is set (unsafe).
+    """
+    from fpml_cdm.cdm_structure_validator import validate_cdm_structure
 
     data = json.loads(json_string)
-    trade_dict = data.get("trade", data)
-
-    issues = validate_cdm_official_schema(trade_dict)
-    error_dicts = [issue.to_dict() for issue in issues]
-    return {
-        "valid": len(issues) == 0,
-        "errors": error_dicts,
-        "error_count": len(issues),
-    }
+    report = validate_cdm_structure(data, target_type="trade")
+    return report.to_dict()
 
 
 # ── Tool 13: finish ──────────────────────────────────────────────────

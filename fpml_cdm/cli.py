@@ -232,6 +232,52 @@ def cmd_validate_rosetta(args: argparse.Namespace) -> int:
     return 0 if result.valid else 1
 
 
+def cmd_validate_cdm_structure(args: argparse.Namespace) -> int:
+    """Unified CDM v6 structural validation (envelope + JSON Schema + Rosetta + supplementary)."""
+    import sys
+
+    from .cdm_structure_validator import infra_blocked, validate_cdm_structure
+
+    err = sys.stderr
+    try:
+        path = _resolve_existing_input_file(args.input)
+    except FileNotFoundError as exc:
+        err.write(f"{exc}\n")
+        return 2
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        err.write(f"Invalid JSON: {exc}\n")
+        return 2
+
+    if getattr(args, "no_rosetta", False):
+        err.write(
+            "WARNING: --no-rosetta skips the Rosetta JVM layer; not a full structural gate.\n",
+        )
+
+    allow = bool(getattr(args, "allow_no_rosetta", False))
+    report = validate_cdm_structure(
+        data,
+        target_type=args.target_type,
+        run_schema=not getattr(args, "no_schema", False),
+        run_rosetta=not getattr(args, "no_rosetta", False),
+        supplementary=not getattr(args, "no_supplementary", False),
+        rosetta_timeout_seconds=int(getattr(args, "timeout", 60)),
+        allow_no_rosetta=allow if allow else None,
+    )
+    out_dict = report.to_dict()
+    _write_json(out_dict, args.output)
+
+    codes = [str(i.code) for i in report.issues]
+    if not report.structure_ok:
+        if infra_blocked(codes) and not allow:
+            return 2
+        return 1
+    return 0
+
+
 def _resolve_llm_provider(args: argparse.Namespace):
     provider_name = getattr(args, "llm_provider", "none") or "none"
     if provider_name == "none":
@@ -385,7 +431,20 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     err.write(f"\nAgent completed in {result.duration_seconds:.1f}s\n")
     err.write(f"  Iterations:  {result.iterations}\n")
     err.write(f"  Tool calls:  {result.total_tool_calls}\n")
-    err.write(f"  Match:       {result.match_percentage}%\n")
+    err.write(f"  Match:       {result.match_percentage}%  (diff_json vs expected CDM when run_java stdout captured)\n")
+    v = getattr(result, "verification", None)
+    if isinstance(v, dict):
+        llm_m = v.get("llm_reported_match_percentage")
+        if llm_m is not None and float(llm_m) != float(result.match_percentage):
+            err.write(f"  LLM claimed: {llm_m}% (informational only)\n")
+        dj = v.get("diff_json")
+        if isinstance(dj, dict) and dj.get("error"):
+            err.write(f"  diff_json:   ERROR {dj.get('error')}\n")
+        cs = v.get("cdm_structure")
+        if isinstance(cs, dict) and cs.get("structure_ok") is not None:
+            err.write(f"  structure_ok: {cs.get('structure_ok')}\n")
+        if v.get("note") == "no_run_java_stdout_for_verification":
+            err.write("  Verification: skipped (no successful run_java stdout in session)\n")
     err.write(f"  Status:      {'SUCCESS' if result.success else 'FAILURE'}\n")
     err.write(f"  Summary:     {result.summary}\n")
 
@@ -492,7 +551,20 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
     err.write(f"\nAgent completed in {java_result.duration_seconds:.1f}s\n")
     err.write(f"  Iterations:  {java_result.iterations}\n")
     err.write(f"  Tool calls:  {java_result.total_tool_calls}\n")
-    err.write(f"  Match:       {java_result.match_percentage}%\n")
+    err.write(f"  Match:       {java_result.match_percentage}%  (diff_json vs expected CDM when run_java stdout captured)\n")
+    jv = getattr(java_result, "verification", None)
+    if isinstance(jv, dict):
+        llm_m = jv.get("llm_reported_match_percentage")
+        if llm_m is not None and float(llm_m) != float(java_result.match_percentage):
+            err.write(f"  LLM claimed: {llm_m}% (informational only)\n")
+        dj = jv.get("diff_json")
+        if isinstance(dj, dict) and dj.get("error"):
+            err.write(f"  diff_json:   ERROR {dj.get('error')}\n")
+        cs = jv.get("cdm_structure")
+        if isinstance(cs, dict) and cs.get("structure_ok") is not None:
+            err.write(f"  structure_ok: {cs.get('structure_ok')}\n")
+        if jv.get("note") == "no_run_java_stdout_for_verification":
+            err.write("  Verification: skipped (no successful run_java stdout in session)\n")
     err.write(f"  Status:      {'SUCCESS' if java_result.success else 'FAILURE'}\n")
     err.write(f"  Summary:     {java_result.summary}\n")
 
@@ -542,6 +614,41 @@ def build_parser() -> argparse.ArgumentParser:
     rosetta_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress JSON output to stdout (diagnostic still goes to stderr)")
     rosetta_parser.set_defaults(func=cmd_validate_rosetta)
 
+    cdm_struct_parser = subparsers.add_parser(
+        "validate-cdm-structure",
+        help="Unified CDM v6 validation: envelope + JSON Schema + Rosetta + supplementary",
+    )
+    cdm_struct_parser.add_argument("input", help="CDM JSON file (object with top-level trade or tradeState)")
+    cdm_struct_parser.add_argument("--output", "-o", help="Write full validation report JSON to this path")
+    cdm_struct_parser.add_argument(
+        "--target-type",
+        choices=("trade", "tradeState"),
+        default="trade",
+        help="Top-level CDM key to validate (default: trade)",
+    )
+    cdm_struct_parser.add_argument("--timeout", type=int, default=60, help="Rosetta JVM timeout in seconds (default: 60)")
+    cdm_struct_parser.add_argument(
+        "--no-rosetta",
+        action="store_true",
+        help="Skip Rosetta JVM layer (debug only; exit code may still be non-zero)",
+    )
+    cdm_struct_parser.add_argument(
+        "--no-schema",
+        action="store_true",
+        help="Skip official JSON Schema (Draft 04) layer",
+    )
+    cdm_struct_parser.add_argument(
+        "--no-supplementary",
+        action="store_true",
+        help="Skip supplementary checker registry",
+    )
+    cdm_struct_parser.add_argument(
+        "--allow-no-rosetta",
+        action="store_true",
+        help=f"Allow missing Java/JAR (unsafe; sets env-style skip; see FPML_CDM_ALLOW_NO_ROSETTA)",
+    )
+    cdm_struct_parser.set_defaults(func=cmd_validate_cdm_structure)
+
     convert_parser = subparsers.add_parser("convert", help="Run parse -> transform -> validate")
     convert_parser.add_argument("input", help="Input FpML XML file")
     convert_parser.add_argument("--output", "-o", help="Output full conversion result JSON")
@@ -555,7 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--mapping-provider", choices=("none", "openrouter", "openai"), default="none", help="Provider for mapping-agent refinement (default: none)")
     convert_parser.add_argument("--mapping-api-key", default=None, help="API key for mapping provider (optional; env vars supported)")
     convert_parser.add_argument("--mapping-base-url", default=None, help="Base URL for mapping-provider=openai")
-    convert_parser.add_argument("--mapping-model", default="minimax/minimax-m2.5", help="Model for mapping-agent refinement")
+    convert_parser.add_argument("--mapping-model", default="minimax/minimax-m2.7", help="Model for mapping-agent refinement")
     convert_parser.add_argument("--mapping-max-iterations", type=int, default=10, help="Mapping-agent max iterations")
     convert_parser.add_argument("--mapping-max-tool-calls", type=int, default=80, help="Mapping-agent max total tool calls")
     convert_parser.add_argument("--mapping-timeout", type=int, default=300, help="Mapping-agent timeout in seconds")
@@ -574,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="CDM JSON file path (prefer forward slashes on Git Bash, e.g. tmp/res/x.json)",
     )
     java_gen_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
-    java_gen_parser.add_argument("--model", default="minimax/minimax-m2.5", help="LLM model name (default: minimax/minimax-m2.5)")
+    java_gen_parser.add_argument("--model", default="minimax/minimax-m2.7", help="LLM model name (default: minimax/minimax-m2.5)")
     java_gen_parser.add_argument("--api-key", default=None, help="API key (for --provider openai: OpenAI key; else ignored)")
     java_gen_parser.add_argument("--base-url", default=None, help="Base URL (for --provider openai only)")
     java_gen_parser.add_argument("--max-iterations", type=int, default=20, help="Max agent iterations (default: 20)")

@@ -177,7 +177,7 @@ Follow this workflow:
 5. Call `compile_java` — if errors, use `patch_java_file` (batch), then recompile.
    After a compile failure, prefer `read_java_file` before patching so old_text matches the file.
 6. Call `run_java` — stdout should be JSON with a `trade` object.
-7. Optionally `validate_output` on stdout.
+7. Optionally `validate_output` on stdout (returns full `cdm_structure` report: `structure_ok`, `issues`, `rosetta`, `layer_ok`; needs Java + JAR unless `FPML_CDM_ALLOW_NO_ROSETTA`).
 8. Call `finish` with the result.
 """
 

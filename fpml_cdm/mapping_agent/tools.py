@@ -140,6 +140,7 @@ def run_conversion_with_patch(
     Returns the CDM JSON (best-effort even if validation fails) plus
     a schema/semantic error summary for the agent loop.
     """
+    from fpml_cdm.cdm_structure_validator import validate_cdm_structure
     from fpml_cdm.rulesets import get_base_ruleset
     from fpml_cdm.ruleset_engine import apply_ruleset_patch, parse_fpml_fx_with_ruleset
     from fpml_cdm.transformer import transform_to_cdm_v6
@@ -158,20 +159,32 @@ def run_conversion_with_patch(
     cdm = transform_to_cdm_v6(normalized)
     report = validate_normalized_and_cdm(normalized, cdm)
 
+    cdm_structure = validate_cdm_structure(
+        cdm,
+        target_type="trade",
+        run_rosetta=enable_rosetta,
+        rosetta_timeout_seconds=rosetta_timeout_seconds,
+    ).to_dict()  # when enable_rosetta is False, Rosetta layer is skipped (legacy compat)
+
     schema_error_count = sum(1 for e in report.errors if e.code == "SCHEMA_VALIDATION_FAILED")
     semantic_error_count = sum(1 for e in report.errors if e.code == "SEMANTIC_VALIDATION_FAILED")
-    rosetta_failure_count = 0
-    rosetta_report = None
-    if enable_rosetta:
-        from fpml_cdm.rosetta_validator import validate_cdm_rosetta_with_retry
+    ros = cdm_structure.get("rosetta") or {}
+    if not enable_rosetta:
+        rosetta_failure_count = 0
+    elif ros.get("valid") is True:
+        rosetta_failure_count = 0
+    elif ros.get("ran") and ros.get("valid") is False:
+        rosetta_failure_count = max(1, int(ros.get("failure_count") or 0))
+    else:
+        rosetta_failure_count = 1
 
-        ros = validate_cdm_rosetta_with_retry(
-            cdm,
-            timeout_seconds=rosetta_timeout_seconds,
-            max_attempts=2,
-        )
-        rosetta_report = ros.to_dict()
-        rosetta_failure_count = 0 if ros.valid else max(1, len(ros.failures))
+    rosetta_report = {
+        "valid": ros.get("valid"),
+        "failureCount": ros.get("failure_count"),
+        "failures": ros.get("failures") or [],
+        "error": ros.get("error"),
+        "from_cdm_structure": True,
+    }
 
     return {
         "adapter_id": adapter_id,
@@ -180,6 +193,7 @@ def run_conversion_with_patch(
         "parse_issues": [i.to_dict() for i in parse_issues],
         "cdm_json": cdm,
         "validation_report": report.to_dict(),
+        "cdm_structure": cdm_structure,
         "validation_summary": {
             "schema_error_count": schema_error_count,
             "semantic_error_count": semantic_error_count,
@@ -200,38 +214,42 @@ def validate_best_effort(
     """
     Validate `cdm_json` for the given `fpml_path`.
 
+    Returns:
+      - ``cdm_structure``: full :func:`~fpml_cdm.cdm_structure_validator.validate_cdm_structure`
+        report (schema + Rosetta when ``enable_rosetta`` is True).
+      - ``validation_report``: legacy FpML-bound report from ``validate_conversion_files``
+        (normalized schema + FX semantics).
+
     Notes:
-      - this tool is deterministic
-      - Rosetta is best-effort and optional
+      - deterministic; use ``run_conversion_with_patch`` when validating ruleset patches.
+      - when ``enable_rosetta`` is False, the CDM structure validator skips the Rosetta layer.
     """
+    from fpml_cdm.cdm_structure_validator import validate_cdm_structure
     from fpml_cdm.validator import validate_conversion_files
-    from fpml_cdm.rosetta_validator import validate_cdm_rosetta_with_retry
 
     # Re-parse normalized from the source, since validate_conversion_files is
     # source-bound. For patch-based validation, the agent should prefer
     # `run_conversion_with_patch`, which uses the patched normalized model.
     report = validate_conversion_files(fpml_path, _write_tmp_cdm_json(cdm_json))
 
-    rosetta_report = None
-    rosetta_errors = []
-    if enable_rosetta:
-        try:
-            ros = validate_cdm_rosetta_with_retry(
-                cdm_json,
-                timeout_seconds=rosetta_timeout_seconds,
-                max_attempts=2,
-            )
-            rosetta_report = ros.to_dict()
-            rosetta_errors = ros.to_issues()
-        except Exception as exc:
-            rosetta_report = {"error": f"{type(exc).__name__}: {exc}"}
+    cdm_structure = validate_cdm_structure(
+        cdm_json,
+        target_type="trade",
+        run_rosetta=enable_rosetta,
+        rosetta_timeout_seconds=rosetta_timeout_seconds,
+    ).to_dict()
 
-    if enable_rosetta and rosetta_errors:
-        # Merge rosetta failures into the report errors for visibility.
-        report.errors.extend(rosetta_errors)
-        report.valid = len(report.errors) == 0
+    ros = cdm_structure.get("rosetta") or {}
+    rosetta_report = {
+        "valid": ros.get("valid"),
+        "failureCount": ros.get("failure_count"),
+        "failures": ros.get("failures") or [],
+        "error": ros.get("error"),
+        "from_cdm_structure": True,
+    }
 
     out: Dict[str, Any] = report.to_dict()
+    out["cdm_structure"] = cdm_structure
     out["rosetta_report"] = rosetta_report
     return out
 

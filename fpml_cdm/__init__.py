@@ -31,6 +31,12 @@ from .types import (
     ValidationIssue,
     ValidationReport,
 )
+from .cdm_structure_validator import (
+    CdmStructureIssue,
+    CdmStructureReport,
+    validate_cdm_structure,
+    infra_blocked,
+)
 from .validator import (
     validate_conversion_files,
     validate_normalized_parsed_dict,
@@ -66,6 +72,10 @@ __all__ = [
     "validate_normalized_parsed_dict",
     "validate_schema_data",
     "validate_conversion_files",
+    "validate_cdm_structure",
+    "infra_blocked",
+    "CdmStructureIssue",
+    "CdmStructureReport",
     "validate_cdm_rosetta",
     "convert_fpml_to_cdm",
     "ConversionResult",
