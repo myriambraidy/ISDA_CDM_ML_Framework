@@ -76,34 +76,58 @@ For **`inspect_cdm_json`**, when only the structural **`tree`** is oversized, th
 If the conversation would exceed the model context window, the agent may externalize large blobs
 behind handles. If you see a tool result stub containing a **handle**, call
 `compact_context` or `fetch_payload` to retrieve the exact bytes you need (lossless paging).
+
+## Fidelity guardrail (do not “compile by deleting semantics”)
+
+Compilation success is not sufficient. The Java stdout JSON must match the input CDM JSON structurally.
+Do NOT remove or omit fields that exist in the input JSON just to make Java compile.
+
+If you hit compile errors, fix imports/types/builder methods; preserve semantics.
+
+Fidelity-critical recurring fields (do not drop):
+- Top-level `meta`
+- Any `address` object (document-scope cross-reference provenance)
+- `trade.contractDetails.documentation[*].contractualParty`
 """
 
 IMPORT_TAIL = ""
 
 LOCATIONS_KEY = """\
-## CRITICAL: MetaFields.addLocation() takes Key, not MetaFields
+## CRITICAL: MetaFields location array — use addKey(Key), NOT addLocation(Key)
 
-The **location** array on MetaFields contains **Key** objects. Key and MetaFields look similar in JSON
-(both may have scope/value) but they are different Java types.
+The **location** array in JSON on MetaFields maps to Java **addKey(Key)**, NOT addLocation.
+Rosetta renames the adder. Key and MetaFields look similar in JSON (both may have scope/value)
+but they are different Java types.
 
-WRONG (will not compile):
+WRONG (will not compile — wrong method AND wrong type):
     MetaFields.builder()
         .addLocation(
             MetaFields.builder()
                 .setScope("DOCUMENT")
-                .setValue("quantity-1")
+                .setKeyValue("quantity-1")
+                .build()
+        )
+
+WRONG (will not compile — wrong method name):
+    MetaFields.builder()
+        .addLocation(
+            Key.builder()
+                .setScope("DOCUMENT")
+                .setKeyValue("quantity-1")
                 .build()
         )
 
 CORRECT:
     MetaFields.builder()
-        .addLocation(
+        .addKey(
             Key.builder()
                 .setScope("DOCUMENT")
-                .setValue("quantity-1")
+                .setKeyValue("quantity-1")
                 .build()
         )
 
+CRITICAL: Key has NO setValue — JSON property 'value' maps to Java `setKeyValue(String)`.
+CRITICAL: The Java method is `addKey`, not `addLocation`, despite the JSON property name.
 Import: `import com.rosetta.model.lib.meta.Key;` (Key is in well_known_imports when present).
 """
 
@@ -114,28 +138,33 @@ When CDM JSON has an **address** such as `{"scope": "DOCUMENT", "value": "quanti
 **globalReference** / **externalReference** on the same object, use **pre-computed** lines from
 **reference_patterns_sample** in `inspect_cdm_json`.
 
-WRONG — nested Reference / setValue on ReferenceBuilder (does not exist):
-    ReferenceWithMetaNonNegativeQuantitySchedule.builder()
-        .setReference(
-            Reference.builder()
-                .setScope("DOCUMENT")
-                .setValue("quantity-1")
-                .build()
-        )
+## Fidelity rule (literal JSON match)
+If the expected JSON for a ReferenceWithMeta* node contains an `address` object, you MUST use
+`setAddress(Reference.builder().setScope(...).setReference(...).build())` to reproduce it.
+Do NOT call `setGlobalReference(...)` on that same node unless the expected JSON also contains
+`globalReference`. Extra fields cause match failure.
 
-WRONG — setAddress (does not exist).
-
-CORRECT — setGlobalReference with the value string (from address.value or globalReference):
-    ReferenceWithMetaNonNegativeQuantitySchedule.builder()
+WRONG — putting scope/value into globalReference (will not reproduce address object):
+    ReferenceWithMetaObservable.builder()
         .setGlobalReference("quantity-1")
+
+CORRECT — JSON `address` is a Reference(scope,value): use setAddress(Reference):
+    ReferenceWithMetaObservable.builder()
+        .setAddress(Reference.builder()
+            .setScope("DOCUMENT")
+            .setReference("quantity-1")
+            .build())
+
+CRITICAL: Reference has NO setValue method. JSON property 'value' maps to Java `setReference(String)`.
+Similarly, Key has NO setValue — use `setKeyValue(String)` for Key's JSON 'value' field.
 
 CORRECT — both when present:
     ReferenceWithMetaParty.builder()
         .setGlobalReference("74597c1f")
         .setExternalReference("party1")
 
-`setReference(Reference)` on ReferenceWithMeta* is for internal Rosetta identity, not document-scope
-cross-references.
+Use `setAddress(Reference)` only when the JSON actually has an `address` object. Use
+setGlobalReference/setExternalReference only when the JSON has those string fields.
 """
 
 PATCH = """\
@@ -158,6 +187,14 @@ WRONG — replacing a whole `.setMeta(MetaFields.builder().addLocation(Key...))`
 
 CORRECT — change only the wrong inner type (e.g. MetaFields → Key inside addLocation), preserving
 the surrounding structure.
+
+## Batch fix: address-only nodes
+If a ReferenceWithMeta* node in the expected JSON has `address` and does NOT have `globalReference`,
+then the Java must use `.setAddress(Reference.builder().setScope(\"DOCUMENT\").setReference(\"...\").build())`
+and must NOT call `.setGlobalReference(\"...\")` for that same node.
+Remember: Reference has NO setValue — use setReference(String) for JSON 'value'.
+
+If you find multiple occurrences, fix all of them in ONE `patch_java_file` call using the patches array.
 """
 
 STRATEGY = """\
@@ -172,9 +209,14 @@ Follow this workflow:
    - **java_type_warnings** — JSON vs Java type mismatches (dates, etc.).
 2. Call `get_java_template` for boilerplate.
 3. Call `lookup_cdm_schema` / `list_enum_values` as needed. For JSON **address** on ReferenceWithMeta*,
-   follow setter_note: use **setGlobalReference** with address.value, not nested Reference.
+   follow **reference_patterns_sample**: use **setAddress(Reference.builder().setScope(...).setReference(...).build())**.
+   Reference has NO setValue — JSON 'value' maps to `setReference(String)`. Key uses `setKeyValue(String)`.
 4. Generate code and call `write_java_file`.
+   When writing or rewriting a file, include ALL imports from `well_known_imports`, ALL `import_statement`
+   fields from `type_registry`, and ALL enum imports from `enums_used`. An unused import is cheap;
+   a missing one costs a full compile-patch-recompile cycle.
 5. Call `compile_java` — if errors, use `patch_java_file` (batch), then recompile.
+   If `compile_java` returns a `missing_imports_block`, add ALL listed imports in ONE patch.
    After a compile failure, prefer `read_java_file` before patching so old_text matches the file.
 6. Call `run_java` — stdout should be JSON with a `trade` object.
 7. Optionally `validate_output` on stdout (returns full `cdm_structure` report: `structure_ok`, `issues`, `rosetta`, `layer_ok`; needs Java + JAR unless `FPML_CDM_ALLOW_NO_ROSETTA`).
@@ -189,6 +231,11 @@ CONVENTIONS = """\
 - Strings wrapped in FieldWithMetaString: `FieldWithMetaString.builder().setValue("...").build()`
 - Numbers: use `java.math.BigDecimal` for decimals
 - Enums: use the enum class constant (e.g., `CounterpartyRoleEnum.PARTY_1`)
+
+## Package disambiguation (compile traps)
+- `com.rosetta.model.lib.meta`: **Reference**, **Key** only
+- `com.rosetta.model.metafields`: **MetaFields**, **ReferenceWithMeta***,  **FieldWithMeta***
+MetaFields is NOT in `com.rosetta.model.lib.meta`. Never import it from there.
 """
 
 DATES = """\

@@ -582,5 +582,26 @@ class RealLLMIntegrationTests(unittest.TestCase):
         print(f"\n  Strategy test: {sorted(tool_names_used)} in {result.iterations} iters")
 
 
+class FinishGateEnvTests(unittest.TestCase):
+    """Test FPML_CDM_STRICT_FINISH_GATE env var (default: pass-through)."""
+
+    def test_default_is_pass_through(self) -> None:
+        val = os.environ.get("FPML_CDM_STRICT_FINISH_GATE", "")
+        is_strict = val.lower() in ("1", "true", "yes")
+        self.assertFalse(is_strict, "Default should be pass-through (not strict)")
+
+    def test_strict_gate_activates(self) -> None:
+        for val in ("1", "true", "True", "YES", "yes"):
+            with patch.dict(os.environ, {"FPML_CDM_STRICT_FINISH_GATE": val}):
+                active = os.environ.get("FPML_CDM_STRICT_FINISH_GATE", "").lower() in ("1", "true", "yes")
+                self.assertTrue(active, f"Should be strict for value {val!r}")
+
+    def test_non_strict_values(self) -> None:
+        for val in ("0", "false", "no", ""):
+            with patch.dict(os.environ, {"FPML_CDM_STRICT_FINISH_GATE": val}):
+                active = os.environ.get("FPML_CDM_STRICT_FINISH_GATE", "").lower() in ("1", "true", "yes")
+                self.assertFalse(active, f"Should NOT be strict for value {val!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

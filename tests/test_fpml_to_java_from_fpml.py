@@ -68,6 +68,8 @@ class GenerateJavaFromFpmlTests(unittest.TestCase):
                         config: object,
                         log_progress: object = None,
                         java_class_name: object = None,
+                        artifacts_dir: object = None,
+                        enable_fixups: object = None,
                     ) -> AgentResult:
                         cdm_json_path_p = Path(cdm_json_path)
                         self.assertTrue(cdm_json_path_p.exists())

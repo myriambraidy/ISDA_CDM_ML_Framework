@@ -36,13 +36,15 @@ CDM_FIXTURE = FIXTURES / "expected" / "fx_forward_cdm.json"
 
 class ClassifyReferenceNodeTests(unittest.TestCase):
 
-    def test_address_maps_to_set_global_reference(self) -> None:
+    def test_address_maps_to_set_address_with_set_reference(self) -> None:
         node = {"address": {"scope": "DOCUMENT", "value": "quantity-1"}}
         r = _classify_reference_node(node, "$.trade.x")
         assert r is not None
         self.assertEqual(r["pattern"], "address")
-        self.assertIn("setGlobalReference", r["builder_call"])
+        self.assertIn("setAddress", r["builder_call"])
+        self.assertIn(".setReference(", r["builder_call"])
         self.assertIn("quantity-1", r["builder_call"])
+        self.assertNotIn(".setValue(", r["builder_call"])
 
     def test_global_and_external(self) -> None:
         node = {"globalReference": "abc", "externalReference": "party1"}
@@ -161,13 +163,38 @@ class LookupCdmSchemaTests(unittest.TestCase):
             result["properties"]["tradeDate"]["setter_hint"], "setTradeDate"
         )
 
-    def test_reference_with_meta_address_uses_set_global_reference_hint(self) -> None:
+    def test_reference_with_meta_address_uses_set_address_hint(self) -> None:
         result = lookup_cdm_schema("ReferenceWithMetaNonNegativeQuantitySchedule")
         self.assertNotIn("error", result)
         addr = result["properties"]["address"]
-        self.assertEqual(addr["setter_hint"], "setGlobalReference")
+        self.assertEqual(addr["setter_hint"], "setAddress")
         self.assertIn("setter_note", addr)
         self.assertIn("builder_reference_note", result)
+
+    def test_reference_value_uses_set_reference(self) -> None:
+        result = lookup_cdm_schema("Reference")
+        self.assertNotIn("error", result)
+        val = result["properties"]["value"]
+        self.assertEqual(val["setter_hint"], "setReference")
+        self.assertIn("setter_note", val)
+        self.assertIn("setReference", val["setter_note"])
+
+    def test_key_value_uses_set_key_value(self) -> None:
+        result = lookup_cdm_schema("Key")
+        self.assertNotIn("error", result)
+        val = result["properties"]["value"]
+        self.assertEqual(val["setter_hint"], "setKeyValue")
+        self.assertIn("setter_note", val)
+        self.assertIn("setKeyValue", val["setter_note"])
+
+    def test_metafields_key_property_uses_add_key(self) -> None:
+        """MetaFields schema exposes 'key' (array of Key). Default array derivation → addKey."""
+        result = lookup_cdm_schema("MetaFields")
+        self.assertNotIn("error", result)
+        key_prop = result["properties"]["key"]
+        self.assertTrue(key_prop["is_array"])
+        self.assertEqual(key_prop["setter_hint"], "addKey")
+        self.assertEqual(key_prop["ref"], "com-rosetta-model-lib-meta-Key.schema.json")
 
     def test_settlement_payout_required(self) -> None:
         result = lookup_cdm_schema("SettlementPayout")
@@ -540,6 +567,66 @@ class CompileJavaTests(unittest.TestCase):
         self.assertFalse(result["success"])
 
 
+class CompileMissingImportsBlockTests(unittest.TestCase):
+    """Test that compile_java consolidates missing-symbol errors into a single import block."""
+
+    def test_missing_imports_block_from_parsed_errors(self) -> None:
+        from fpml_cdm.java_gen.tools import _parse_javac_errors, WELL_KNOWN_IMPORTS
+        stderr = (
+            "Foo.java:5: error: cannot find symbol\n"
+            "    MetaFields.builder()\n"
+            "    ^\n"
+            "  symbol:   variable MetaFields\n"
+            "  location: class Foo\n"
+            "Foo.java:10: error: cannot find symbol\n"
+            "    Key.builder()\n"
+            "    ^\n"
+            "  symbol:   variable Key\n"
+            "  location: class Foo\n"
+            "Foo.java:15: error: cannot find symbol\n"
+            "    Reference.builder()\n"
+            "    ^\n"
+            "  symbol:   variable Reference\n"
+            "  location: class Foo\n"
+        )
+        errors = _parse_javac_errors(stderr, Path("Foo.java"))
+        self.assertEqual(len(errors), 3)
+        symbols = {e["missing_symbol"] for e in errors if "missing_symbol" in e}
+        self.assertEqual(symbols, {"MetaFields", "Key", "Reference"})
+        for sym in symbols:
+            self.assertIn(sym, WELL_KNOWN_IMPORTS)
+
+    @unittest.skipUnless(HAS_JAR, "rosetta-validator JAR not built")
+    def test_missing_imports_block_in_compile_output(self) -> None:
+        code = (
+            "public class MissingImportsTest {\n"
+            "    void m() {\n"
+            "        MetaFields mf = null;\n"
+            "        Key k = null;\n"
+            "        Reference r = null;\n"
+            "    }\n"
+            "}\n"
+        )
+        write_java_file(code=code, filename="MissingImportsTest.java")
+        try:
+            result = compile_java(filename="MissingImportsTest.java")
+            self.assertFalse(result["success"])
+            self.assertIn("missing_imports_block", result)
+            block = result["missing_imports_block"]
+            self.assertIn("imports", block)
+            imports = block["imports"]
+            self.assertGreaterEqual(len(imports), 3)
+            import_text = "\n".join(imports)
+            self.assertIn("com.rosetta.model.metafields.MetaFields", import_text)
+            self.assertIn("com.rosetta.model.lib.meta.Key", import_text)
+            self.assertIn("com.rosetta.model.lib.meta.Reference", import_text)
+        finally:
+            for f in ("MissingImportsTest.java", "MissingImportsTest.class"):
+                p = GENERATED_DIR / f
+                if p.exists():
+                    p.unlink()
+
+
 class CompileJavaNoJarTests(unittest.TestCase):
 
     def test_missing_jar_returns_error(self) -> None:
@@ -599,16 +686,43 @@ class DiffJsonTests(unittest.TestCase):
         del data["trade"]["tradeDate"]
         result = diff_json(str(CDM_FIXTURE), json.dumps(data))
         self.assertFalse(result["match"])
-        missing = [d for d in result["differences"] if d["type"] == "missing_in_actual"]
-        self.assertGreater(len(missing), 0)
+        self.assertGreater(len(result["differences"]), 0)
+
+    def test_missing_field_partial_percentage(self) -> None:
+        data = json.loads(CDM_FIXTURE.read_text())
+        del data["trade"]["tradeDate"]
+        result = diff_json(str(CDM_FIXTURE), json.dumps(data))
+        self.assertFalse(result["match"])
+        pct = result["match_percentage"]
+        self.assertGreater(pct, 0.0, "partial match should be above 0%")
+        self.assertLess(pct, 100.0, "partial match should be below 100%")
+        self.assertLess(result["matched_leaf_values"], result["total_leaf_values"])
+
+    def test_single_value_mismatch_partial(self) -> None:
+        import tempfile
+        expected = '{"a": 1, "b": 2, "c": 3, "d": 4}'
+        actual = '{"a": 1, "b": 2, "c": 999, "d": 4}'
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(expected)
+            tmp_path = f.name
+        try:
+            result = diff_json(tmp_path, actual)
+            self.assertFalse(result["match"])
+            self.assertEqual(result["total_leaf_values"], 4)
+            self.assertEqual(result["matched_leaf_values"], 3)
+            self.assertEqual(result["match_percentage"], 75.0)
+        finally:
+            Path(tmp_path).unlink()
 
     def test_value_mismatch(self) -> None:
         data = json.loads(CDM_FIXTURE.read_text())
         data["trade"]["tradeDate"]["value"] = "1999-01-01"
         result = diff_json(str(CDM_FIXTURE), json.dumps(data))
         self.assertFalse(result["match"])
-        mismatches = [d for d in result["differences"] if d["type"] == "value_mismatch"]
-        self.assertGreater(len(mismatches), 0)
+        self.assertGreater(len(result["differences"]), 0)
+        pct = result["match_percentage"]
+        self.assertGreater(pct, 0.0, "single value mismatch should not be 0%")
+        self.assertLess(pct, 100.0)
 
     def test_type_mismatch(self) -> None:
         data = json.loads(CDM_FIXTURE.read_text())
@@ -616,15 +730,14 @@ class DiffJsonTests(unittest.TestCase):
         data["trade"]["tradeLot"][0]["priceQuantity"][0]["price"][0]["value"]["value"] = "1.28"
         result = diff_json(str(CDM_FIXTURE), json.dumps(data))
         self.assertFalse(result["match"])
-        type_mismatches = [d for d in result["differences"] if d["type"] == "type_mismatch"]
-        self.assertGreater(len(type_mismatches), 0)
+        self.assertGreater(len(result["differences"]), 0)
 
     def test_extra_in_actual(self) -> None:
         data = json.loads(CDM_FIXTURE.read_text())
         data["trade"]["extraField"] = {"someKey": "abc123"}
         result = diff_json(str(CDM_FIXTURE), json.dumps(data))
-        self.assertTrue(result["match"])  # extra fields don't count as mismatch
-        self.assertIn("$.trade.extraField", result["extra_in_actual"])
+        self.assertFalse(result["match"])  # strict: extra fields fail
+        self.assertGreater(len(result["differences"]), 0)
 
     def test_float_tolerance(self) -> None:
         import tempfile
@@ -656,6 +769,19 @@ class DiffJsonTests(unittest.TestCase):
         data = json.loads(CDM_FIXTURE.read_text())
         result = diff_json(str(CDM_FIXTURE), json.dumps(data))
         self.assertEqual(result["matched_leaf_values"], result["total_leaf_values"])
+
+    def test_strict_extra_top_level(self) -> None:
+        import tempfile
+        expected = '{"a": 1}'
+        actual = '{"a": 1, "b": 2}'
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(expected)
+            tmp_path = f.name
+        try:
+            result = diff_json(tmp_path, actual)
+            self.assertFalse(result["match"])
+        finally:
+            Path(tmp_path).unlink()
 
 
 # ── validate_output ──────────────────────────────────────────────────
@@ -789,6 +915,11 @@ class InspectTypeRegistryTests(unittest.TestCase):
     def test_location_array_warnings_present(self) -> None:
         self.assertIn("location_array_warnings", self.result)
         self.assertIsInstance(self.result["location_array_warnings"], list)
+
+    def test_location_array_warnings_mention_add_key(self) -> None:
+        for w in self.result["location_array_warnings"]:
+            self.assertIn("addKey", w["note"],
+                          "location_array_warnings should tell the LLM to use addKey, not addLocation")
 
 
 # ── patch_java_file: no-op guard & batch mode ────────────────────────
@@ -940,6 +1071,20 @@ class SystemPromptTests(unittest.TestCase):
     def test_no_one_at_a_time_rule(self) -> None:
         from fpml_cdm.java_gen.agent import SYSTEM_PROMPT
         self.assertNotIn("ONE AT A TIME", SYSTEM_PROMPT)
+
+    def test_mentions_add_key_not_add_location(self) -> None:
+        from fpml_cdm.java_gen.agent import SYSTEM_PROMPT
+        self.assertIn("addKey", SYSTEM_PROMPT)
+        self.assertIn("NOT addLocation", SYSTEM_PROMPT)
+
+    def test_mentions_package_disambiguation(self) -> None:
+        from fpml_cdm.java_gen.agent import SYSTEM_PROMPT
+        self.assertIn("com.rosetta.model.lib.meta", SYSTEM_PROMPT)
+        self.assertIn("com.rosetta.model.metafields", SYSTEM_PROMPT)
+
+    def test_mentions_include_all_imports(self) -> None:
+        from fpml_cdm.java_gen.agent import SYSTEM_PROMPT
+        self.assertIn("missing_imports_block", SYSTEM_PROMPT)
 
 
 if __name__ == "__main__":

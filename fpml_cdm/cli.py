@@ -364,6 +364,7 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     from .java_gen.agent import run_agent, AgentConfig
 
     err = sys.stderr
+    match_only = bool(getattr(args, "match_only", False))
     try:
         cdm_json_path = _resolve_existing_input_file(args.input)
     except FileNotFoundError as exc:
@@ -375,7 +376,8 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
         )
         return 2
 
-    err.write(f"\n[1/2] Initializing agent for {cdm_json_path}...\n")
+    if not match_only:
+        err.write(f"\n[1/2] Initializing agent for {cdm_json_path}...\n")
 
     if getattr(args, "debug_openrouter", False):
         import os
@@ -411,9 +413,10 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
             err.write(f"  FAIL: {e}\n")
             return 2
 
-    err.write(f"  Model: {args.model}\n")
-    err.write(f"  Max iterations: {config.max_iterations}\n")
-    err.write(f"\n[2/2] Running agent loop...\n")
+    if not match_only:
+        err.write(f"  Model: {args.model}\n")
+        err.write(f"  Max iterations: {config.max_iterations}\n")
+        err.write(f"\n[2/2] Running agent loop...\n")
 
     log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
     java_class = getattr(args, "java_class", None)
@@ -426,7 +429,16 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
         config=config,
         log_progress=log_progress,
         java_class_name=java_class,
+        artifacts_dir=getattr(args, "artifacts_dir", None),
+        enable_fixups=not bool(getattr(args, "no_fixups", False)),
     )
+
+    if match_only:
+        v = getattr(result, "verification", None)
+        dj = v.get("diff_json") if isinstance(v, dict) else None
+        ok = bool(result.success and isinstance(dj, dict) and dj.get("match") is True)
+        sys.stdout.write("true\n" if ok else "false\n")
+        return 0 if ok else 1
 
     err.write(f"\nAgent completed in {result.duration_seconds:.1f}s\n")
     err.write(f"  Iterations:  {result.iterations}\n")
@@ -440,9 +452,13 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
         dj = v.get("diff_json")
         if isinstance(dj, dict) and dj.get("error"):
             err.write(f"  diff_json:   ERROR {dj.get('error')}\n")
+        if v.get("diff_report"):
+            err.write(f"  Diff report: {v.get('diff_report')}\n")
         cs = v.get("cdm_structure")
         if isinstance(cs, dict) and cs.get("structure_ok") is not None:
             err.write(f"  structure_ok: {cs.get('structure_ok')}\n")
+        if v.get("structure_report"):
+            err.write(f"  Structure report: {v.get('structure_report')}\n")
         if v.get("note") == "no_run_java_stdout_for_verification":
             err.write("  Verification: skipped (no successful run_java stdout in session)\n")
     err.write(f"  Status:      {'SUCCESS' if result.success else 'FAILURE'}\n")
@@ -469,7 +485,9 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
     from .java_gen.agent import AgentConfig
 
     err = sys.stderr
-    err.write(f"\n[1/3] Initializing agents for {args.input}...\n")
+    match_only = bool(getattr(args, "match_only", False))
+    if not match_only:
+        err.write(f"\n[1/3] Initializing agents for {args.input}...\n")
 
     mapping_model = args.mapping_model or args.model
 
@@ -509,13 +527,15 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
             err.write(f"  FAIL: {e}\n")
             return 2
 
-    err.write(f"  LLM model (java+mapping): {args.model}\n")
-    err.write(f"  Mapping model: {mapping_model}\n")
-    err.write(f"  Output dir: {args.output_dir}\n")
+    if not match_only:
+        err.write(f"  LLM model (java+mapping): {args.model}\n")
+        err.write(f"  Mapping model: {mapping_model}\n")
+        err.write(f"  Output dir: {args.output_dir}\n")
 
     log_progress: bool | None = True if getattr(args, "verbose", False) else (False if getattr(args, "quiet", False) else None)
 
-    err.write("\n[2/3] Converting FpML to best CDM JSON...\n")
+    if not match_only:
+        err.write("\n[2/3] Converting FpML to best CDM JSON...\n")
     java_class = getattr(args, "java_class", None)
     java_class = java_class.strip() if isinstance(java_class, str) and java_class.strip() else None
 
@@ -530,10 +550,12 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
         log_progress=log_progress,
         output_dir=args.output_dir,
         java_class_name=java_class,
+        artifacts_dir=getattr(args, "artifacts_dir", None),
+        enable_fixups=not bool(getattr(args, "no_fixups", False)),
     )
 
     # Write mapping artifacts.
-    if mapping_result is not None:
+    if mapping_result is not None and not match_only:
         mapping_trace_path = Path(args.output_dir) / "mapping_trace.json"
         _write_json(
             {
@@ -545,9 +567,17 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
         )
         err.write(f"  Mapping trace: {mapping_trace_path}\n")
 
-    err.write("\n[3/3] Running Java code generation agent...\n")
+    if not match_only:
+        err.write("\n[3/3] Running Java code generation agent...\n")
 
     # The Java agent already ran inside generate_java_from_fpml.
+    if match_only:
+        v = getattr(java_result, "verification", None)
+        dj = v.get("diff_json") if isinstance(v, dict) else None
+        ok = bool(java_result.success and isinstance(dj, dict) and dj.get("match") is True)
+        sys.stdout.write("true\n" if ok else "false\n")
+        return 0 if ok else 1
+
     err.write(f"\nAgent completed in {java_result.duration_seconds:.1f}s\n")
     err.write(f"  Iterations:  {java_result.iterations}\n")
     err.write(f"  Tool calls:  {java_result.total_tool_calls}\n")
@@ -560,9 +590,13 @@ def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
         dj = jv.get("diff_json")
         if isinstance(dj, dict) and dj.get("error"):
             err.write(f"  diff_json:   ERROR {dj.get('error')}\n")
+        if jv.get("diff_report"):
+            err.write(f"  Diff report: {jv.get('diff_report')}\n")
         cs = jv.get("cdm_structure")
         if isinstance(cs, dict) and cs.get("structure_ok") is not None:
             err.write(f"  structure_ok: {cs.get('structure_ok')}\n")
+        if jv.get("structure_report"):
+            err.write(f"  Structure report: {jv.get('structure_report')}\n")
         if jv.get("note") == "no_run_java_stdout_for_verification":
             err.write("  Verification: skipped (no successful run_java stdout in session)\n")
     err.write(f"  Status:      {'SUCCESS' if java_result.success else 'FAILURE'}\n")
@@ -688,6 +722,9 @@ def build_parser() -> argparse.ArgumentParser:
     java_gen_parser.add_argument("--max-tool-calls", type=int, default=50, help="Max total tool calls (default: 50)")
     java_gen_parser.add_argument("--timeout", type=int, default=600, help="Agent timeout in seconds; increase for large CDM or slow models (default: 600)")
     java_gen_parser.add_argument("--trace-output", help="Write agent trace JSON to file")
+    java_gen_parser.add_argument("--artifacts-dir", default=None, help="Directory for verification artifacts (default: tmp/java-gen-artifacts/<ClassName>)")
+    java_gen_parser.add_argument("--no-fixups", action="store_true", help="Disable deterministic post-run JSON fixups (debug)")
+    java_gen_parser.add_argument("--match-only", action="store_true", help="Print only true/false match result to stdout and exit 0/1 accordingly")
     java_gen_parser.add_argument(
         "--java-class",
         dest="java_class",
@@ -794,6 +831,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--trace-output",
         help="Optional Java agent trace JSON output file (same as generate-java)",
     )
+    fpml_to_java_parser.add_argument("--artifacts-dir", default=None, help="Directory for verification artifacts (default: tmp/java-gen-artifacts/<ClassName>)")
+    fpml_to_java_parser.add_argument("--no-fixups", action="store_true", help="Disable deterministic post-run JSON fixups (debug)")
+    fpml_to_java_parser.add_argument("--match-only", action="store_true", help="Print only true/false match result to stdout and exit 0/1 accordingly")
     fpml_to_java_parser.add_argument(
         "--verbose",
         "-v",

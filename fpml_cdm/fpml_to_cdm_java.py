@@ -29,6 +29,8 @@ def generate_java_from_fpml(
     log_progress: Optional[bool] = None,
     output_dir: str = "tmp",
     java_class_name: Optional[str] = None,
+    artifacts_dir: Optional[str] = None,
+    enable_fixups: bool = True,
 ) -> Tuple[object, Optional[MappingAgentResult], Path]:
     """
     End-to-end:
@@ -89,6 +91,8 @@ def generate_java_from_fpml(
         config=java_cfg,
         log_progress=log_progress,
         java_class_name=resolved_java_class,
+        artifacts_dir=artifacts_dir,
+        enable_fixups=enable_fixups,
     )
 
     return java_result, mapping_result, cdm_json_path

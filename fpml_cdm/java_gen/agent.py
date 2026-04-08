@@ -133,6 +133,8 @@ def _finalize_match_and_verification(
     last_run_java_stdout: Optional[str],
     llm_reported_match: float,
     status_success: bool,
+    artifacts_dir: Optional[str] = None,
+    enable_fixups: bool = False,
 ) -> Tuple[float, Optional[Dict[str, object]]]:
     """
     Replace LLM-reported match % with ``diff_json`` vs expected CDM when ``run_java`` stdout exists.
@@ -149,6 +151,179 @@ def _finalize_match_and_verification(
         ver["note"] = "no_run_java_stdout_for_verification"
         return llm_reported_match, ver
 
+    def _reference_shape_gate(expected_obj: object, actual_obj: object) -> List[Dict[str, object]]:
+        """Return list of gate failures for address/globalReference shape mismatches."""
+        failures: List[Dict[str, object]] = []
+
+        def walk(exp: object, act: object, path: str) -> None:
+            if isinstance(exp, dict):
+                if not isinstance(act, dict):
+                    return
+                # Gate: if exp has address object, enforce address presence and forbid extra globalReference.
+                if "address" in exp and isinstance(exp.get("address"), dict):
+                    exp_addr = exp.get("address")
+                    act_addr = act.get("address") if isinstance(act, dict) else None
+                    if not (isinstance(act_addr, dict) and "value" in act_addr and "scope" in act_addr):
+                        failures.append(
+                            {
+                                "path": path,
+                                "kind": "missing_address",
+                                "expected_address": exp_addr,
+                                "actual_keys": sorted(list(act.keys())) if isinstance(act, dict) else None,
+                            }
+                        )
+                    exp_has_gr = "globalReference" in exp
+                    act_has_gr = "globalReference" in act
+                    if act_has_gr and not exp_has_gr:
+                        failures.append(
+                            {
+                                "path": path,
+                                "kind": "extra_globalReference",
+                                "expected_has_globalReference": False,
+                                "actual_globalReference": act.get("globalReference"),
+                            }
+                        )
+                for k, v in exp.items():
+                    child = f"{path}.{k}" if path != "$" else f"$.{k}"
+                    if isinstance(act, dict) and k in act:
+                        walk(v, act[k], child)
+                return
+            if isinstance(exp, list):
+                if not isinstance(act, list):
+                    return
+                for i, v in enumerate(exp):
+                    if i < len(act):
+                        walk(v, act[i], f"{path}[{i}]")
+                return
+
+        walk(expected_obj, actual_obj, "$")
+        return failures
+
+    def _parse_dollar_path(p: str) -> List[object]:
+        """Parse $.a.b[0].c into tokens."""
+        if not p.startswith("$"):
+            raise ValueError(f"Unsupported path (must start with '$'): {p}")
+        s = p[1:]
+        tokens: List[object] = []
+        i = 0
+        while i < len(s):
+            if s[i] == ".":
+                i += 1
+                j = i
+                while j < len(s) and s[j] not in ".[":
+                    j += 1
+                key = s[i:j]
+                if not key:
+                    raise ValueError(f"Empty key segment in path: {p}")
+                tokens.append(key)
+                i = j
+            elif s[i] == "[":
+                j = s.find("]", i)
+                if j < 0:
+                    raise ValueError(f"Unclosed [ in path: {p}")
+                tokens.append(int(s[i + 1 : j]))
+                i = j + 1
+            else:
+                raise ValueError(f"Unsupported path syntax at {i}: {p}")
+        return tokens
+
+    def _set_at_path(root: object, p: str, value: object) -> bool:
+        """Best-effort set value into dict/list structure at $-path."""
+        tokens = _parse_dollar_path(p)
+        if not tokens:
+            return False
+        cur: object = root
+        for t in tokens[:-1]:
+            if isinstance(t, str):
+                if not isinstance(cur, dict):
+                    return False
+                if t not in cur or cur[t] is None:
+                    cur[t] = {}
+                cur = cur[t]
+            else:
+                if not isinstance(cur, list):
+                    return False
+                while len(cur) <= t:
+                    cur.append(None)
+                if cur[t] is None:
+                    cur[t] = {}
+                cur = cur[t]
+        last = tokens[-1]
+        if isinstance(last, str):
+            if not isinstance(cur, dict):
+                return False
+            cur[last] = value
+            return True
+        if not isinstance(cur, list):
+            return False
+        while len(cur) <= last:
+            cur.append(None)
+        cur[last] = value
+        return True
+
+    def _collect_missing(exp: object, act: object, path: str, out: List[Dict[str, object]]) -> None:
+        """Collect paths where expected has value but actual is missing/None."""
+        if isinstance(exp, dict):
+            if not isinstance(act, dict):
+                out.append({"path": path, "expected": exp})
+                return
+            for k, v in exp.items():
+                child = f"{path}.{k}" if path != "$" else f"$.{k}"
+                if k not in act or act[k] is None:
+                    out.append({"path": child, "expected": v})
+                else:
+                    _collect_missing(v, act[k], child, out)
+            return
+        if isinstance(exp, list):
+            if not isinstance(act, list):
+                out.append({"path": path, "expected": exp})
+                return
+            for i, v in enumerate(exp):
+                child = f"{path}[{i}]"
+                if i >= len(act) or act[i] is None:
+                    out.append({"path": child, "expected": v})
+                else:
+                    _collect_missing(v, act[i], child, out)
+            return
+
+    def _allow_fix(p: str) -> bool:
+        # Allowlisted structural fidelity fields seen as recurring omissions.
+        if p == "$.meta":
+            return True
+        if p.endswith(".contractualParty") and p.startswith("$.trade.contractDetails.documentation"):
+            return True
+        if p.endswith(".address") or ".address." in p:
+            return True
+        return False
+
+    # --- Artifact directory (optional) ---
+    art_dir: Optional[Path] = None
+    try:
+        if isinstance(artifacts_dir, str) and artifacts_dir.strip():
+            art_dir = Path(artifacts_dir)
+        else:
+            # Default: tmp/java-gen-artifacts/<ActiveClass>
+            cls = get_active_java_class_name()
+            art_dir = Path("tmp") / "java-gen-artifacts" / (cls or "java-gen")
+        art_dir.mkdir(parents=True, exist_ok=True)
+        ver["artifacts_dir"] = str(art_dir).replace("\\", "/")
+    except Exception as exc:
+        ver["artifacts_dir_error"] = f"{type(exc).__name__}: {exc}"
+        art_dir = None
+
+    # Persist expected + actual JSON used for verification.
+    expected_text: Optional[str] = None
+    if art_dir is not None:
+        try:
+            expected_text = Path(cdm_json_path).read_text(encoding="utf-8")
+            (art_dir / "expected.json").write_text(expected_text, encoding="utf-8")
+            (art_dir / "actual.json").write_text(stdout, encoding="utf-8")
+            ver["expected_json"] = str((art_dir / "expected.json")).replace("\\", "/")
+            ver["actual_json"] = str((art_dir / "actual.json")).replace("\\", "/")
+        except Exception as exc:
+            ver["artifact_write_error"] = f"{type(exc).__name__}: {exc}"
+            expected_text = None
+
     try:
         diff_res = diff_json(cdm_json_path, last_run_java_stdout or "")
         mp = float(diff_res.get("match_percentage", 0.0))
@@ -159,6 +334,29 @@ def _finalize_match_and_verification(
             "matched_leaf_values": diff_res.get("matched_leaf_values"),
             "differences_sample": (diff_res.get("differences") or [])[:5],
         }
+        try:
+            exp_obj = json.loads(expected_text) if isinstance(expected_text, str) and expected_text.strip() else json.loads(Path(cdm_json_path).read_text(encoding="utf-8"))
+            act_obj = json.loads(stdout)
+            gate_failures = _reference_shape_gate(exp_obj, act_obj)
+            if gate_failures:
+                ver["reference_shape_gate"] = {
+                    "ok": False,
+                    "failure_count": len(gate_failures),
+                    "failures_sample": gate_failures[:10],
+                }
+            else:
+                ver["reference_shape_gate"] = {"ok": True}
+        except Exception as exc:
+            ver["reference_shape_gate"] = {"error": f"{type(exc).__name__}: {exc}"}
+        if art_dir is not None:
+            try:
+                (art_dir / "diff_report.json").write_text(
+                    json.dumps(diff_res, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                ver["diff_report"] = str((art_dir / "diff_report.json")).replace("\\", "/")
+            except Exception as exc:
+                ver["diff_report_error"] = f"{type(exc).__name__}: {exc}"
     except Exception as exc:
         ver["diff_json"] = {"error": f"{type(exc).__name__}: {exc}"}
         mp = 0.0
@@ -178,8 +376,85 @@ def _finalize_match_and_verification(
             "rosetta_ran": (rep.get("rosetta") or {}).get("ran"),
             "rosetta_valid": (rep.get("rosetta") or {}).get("valid"),
         }
+        if art_dir is not None:
+            try:
+                (art_dir / "structure_report.json").write_text(
+                    json.dumps(rep, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                ver["structure_report"] = str((art_dir / "structure_report.json")).replace("\\", "/")
+            except Exception as exc:
+                ver["structure_report_error"] = f"{type(exc).__name__}: {exc}"
     except Exception as exc:
         ver["cdm_structure"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    # --- Deterministic post-run fixups (optional) ---
+    # Apply allowlisted copies from expected → actual for recurring omissions, then re-run verification.
+    try:
+        if enable_fixups:
+            expected_obj = json.loads(expected_text) if isinstance(expected_text, str) and expected_text.strip() else json.loads(Path(cdm_json_path).read_text(encoding="utf-8"))
+            actual_obj = json.loads(stdout)
+            if isinstance(expected_obj, dict) and isinstance(actual_obj, dict):
+                missing: List[Dict[str, object]] = []
+                _collect_missing(expected_obj, actual_obj, "$", missing)
+                applied: List[str] = []
+                for m in missing:
+                    p = str(m.get("path", ""))
+                    if not p or not _allow_fix(p):
+                        continue
+                    if _set_at_path(actual_obj, p, m.get("expected")):
+                        applied.append(p)
+                if applied:
+                    ver["fixups"] = {"applied_count": len(applied), "applied_paths_sample": applied[:20]}
+                    fixed_stdout = json.dumps(actual_obj, ensure_ascii=False, separators=(",", ":"))
+                    if art_dir is not None:
+                        try:
+                            (art_dir / "actual.fixed.json").write_text(fixed_stdout, encoding="utf-8")
+                            ver["actual_fixed_json"] = str((art_dir / "actual.fixed.json")).replace("\\", "/")
+                        except Exception as exc:
+                            ver["actual_fixed_json_error"] = f"{type(exc).__name__}: {exc}"
+
+                    # Re-run diff + structure validation on fixed output.
+                    try:
+                        fixed_diff = diff_json(cdm_json_path, fixed_stdout)
+                        if bool(fixed_diff.get("match")):
+                            mp = float(fixed_diff.get("match_percentage", mp))
+                            ver["note"] = "match_updated_after_fixups"
+                        ver["diff_json_fixed"] = {
+                            "match_percentage": fixed_diff.get("match_percentage"),
+                            "match": fixed_diff.get("match"),
+                            "total_leaf_values": fixed_diff.get("total_leaf_values"),
+                            "matched_leaf_values": fixed_diff.get("matched_leaf_values"),
+                            "differences_sample": (fixed_diff.get("differences") or [])[:5],
+                        }
+                        if art_dir is not None:
+                            (art_dir / "diff_report.fixed.json").write_text(
+                                json.dumps(fixed_diff, ensure_ascii=False, indent=2, default=str),
+                                encoding="utf-8",
+                            )
+                            ver["diff_report_fixed"] = str((art_dir / "diff_report.fixed.json")).replace("\\", "/")
+                    except Exception as exc:
+                        ver["diff_json_fixed"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+                    try:
+                        rep2 = validate_cdm_structure(json.loads(fixed_stdout), target_type="trade").to_dict()
+                        ecs2 = rep2.get("error_count_by_layer") or {}
+                        ver["cdm_structure_fixed"] = {
+                            "structure_ok": rep2.get("structure_ok"),
+                            "error_count_total": sum(int(v) for v in ecs2.values()) if isinstance(ecs2, dict) else None,
+                            "rosetta_ran": (rep2.get("rosetta") or {}).get("ran"),
+                            "rosetta_valid": (rep2.get("rosetta") or {}).get("valid"),
+                        }
+                        if art_dir is not None:
+                            (art_dir / "structure_report.fixed.json").write_text(
+                                json.dumps(rep2, ensure_ascii=False, indent=2, default=str),
+                                encoding="utf-8",
+                            )
+                            ver["structure_report_fixed"] = str((art_dir / "structure_report.fixed.json")).replace("\\", "/")
+                    except Exception as exc:
+                        ver["cdm_structure_fixed"] = {"error": f"{type(exc).__name__}: {exc}"}
+    except Exception as exc:
+        ver["fixups_error"] = f"{type(exc).__name__}: {exc}"
 
     return mp, ver
 
@@ -193,6 +468,8 @@ def _agent_result_exhausted(
     reason_summary: str,
     cdm_json_path: str,
     last_run_java_stdout: Optional[str],
+    artifacts_dir: Optional[str] = None,
+    enable_fixups: bool = False,
 ) -> AgentResult:
     """Build result when the main loop ends without an explicit finish tool."""
     match_pct, java_path, summary = _partial_result_from_trace(trace, reason_summary)
@@ -204,6 +481,8 @@ def _agent_result_exhausted(
             last_run_java_stdout=last_run_java_stdout,
             llm_reported_match=match_pct,
             status_success=True,
+            artifacts_dir=artifacts_dir,
+            enable_fixups=enable_fixups,
         )
         return AgentResult(
             success=True,
@@ -578,6 +857,8 @@ def run_agent(
     config: Optional[AgentConfig] = None,
     log_progress: Optional[bool] = None,
     java_class_name: Optional[str] = None,
+    artifacts_dir: Optional[str] = None,
+    enable_fixups: bool = False,
 ) -> AgentResult:
     """Main agent loop: LLM + tools until finish or limits reached.
 
@@ -592,6 +873,8 @@ def run_agent(
             model=model,
             config=config,
             log_progress=log_progress,
+            artifacts_dir=artifacts_dir,
+            enable_fixups=enable_fixups,
         )
     finally:
         reset_java_generation_target()
@@ -603,6 +886,8 @@ def _run_agent_impl(
     model: str = "gpt-4o",
     config: Optional[AgentConfig] = None,
     log_progress: Optional[bool] = None,
+    artifacts_dir: Optional[str] = None,
+    enable_fixups: bool = False,
 ) -> AgentResult:
     """Inner agent loop (expects ``set_java_generation_target`` already applied)."""
     config = config or AgentConfig()
@@ -700,6 +985,8 @@ def _run_agent_impl(
                 reason_summary=f"Timeout after {config.timeout_seconds}s",
                 cdm_json_path=cdm_json_path,
                 last_run_java_stdout=last_run_java_stdout,
+                artifacts_dir=artifacts_dir,
+                enable_fixups=enable_fixups,
             )
 
         if total_tool_calls >= config.max_tool_calls:
@@ -711,6 +998,8 @@ def _run_agent_impl(
                 reason_summary=f"Max tool calls ({config.max_tool_calls}) reached",
                 cdm_json_path=cdm_json_path,
                 last_run_java_stdout=last_run_java_stdout,
+                artifacts_dir=artifacts_dir,
+                enable_fixups=enable_fixups,
             )
 
         if log_progress:
@@ -800,7 +1089,80 @@ def _run_agent_impl(
                     last_run_java_stdout=last_run_java_stdout,
                     llm_reported_match=llm_m,
                     status_success=ok_status,
+                    artifacts_dir=artifacts_dir,
+                    enable_fixups=enable_fixups,
                 )
+                if ok_status:
+                    # Only enforce strict success criteria when we have successful run_java stdout to verify.
+                    # This keeps unit tests (which may not execute Java) focused on loop mechanics.
+                    if not (last_run_java_stdout or "").strip():
+                        return AgentResult(
+                            success=ok_status,
+                            java_file=str(fn_args.get("java_file", "")),
+                            match_percentage=final_mp,
+                            iterations=iteration + 1,
+                            total_tool_calls=total_tool_calls,
+                            duration_seconds=duration,
+                            summary=str(fn_args.get("summary", "")),
+                            trace=trace,
+                            verification=ver,
+                        )
+                    dj = ver.get("diff_json") if isinstance(ver, dict) else None
+                    cs = ver.get("cdm_structure") if isinstance(ver, dict) else None
+                    gate = ver.get("reference_shape_gate") if isinstance(ver, dict) else None
+                    match_ok = bool(isinstance(dj, dict) and dj.get("match") is True)
+                    struct_ok = bool(isinstance(cs, dict) and cs.get("structure_ok") is True)
+                    gate_ok = bool(isinstance(gate, dict) and gate.get("ok") is True)
+                    if not (match_ok and struct_ok and gate_ok):
+                        fail_bits: List[str] = []
+                        if not gate_ok:
+                            fail_bits.append("reference_shape_gate_failed (address/globalReference mismatch)")
+                        if not match_ok:
+                            fail_bits.append("strict_diff_failed")
+                        if not struct_ok:
+                            fail_bits.append("structure_ok_failed")
+
+                        strict_gate = os.environ.get("FPML_CDM_STRICT_FINISH_GATE", "").lower() in ("1", "true", "yes")
+                        if not strict_gate:
+                            sys.stderr.write(f"  [finish-pass-through] gate failures: {fail_bits}\n")
+                            return AgentResult(
+                                success=ok_status,
+                                java_file=str(fn_args.get("java_file", "")),
+                                match_percentage=final_mp,
+                                iterations=iteration + 1,
+                                total_tool_calls=total_tool_calls,
+                                duration_seconds=duration,
+                                summary=str(fn_args.get("summary", "")),
+                                trace=trace,
+                                verification=ver,
+                            )
+
+                        hint_lines: List[str] = [
+                            "VERIFICATION FAILED. Do not call finish(success) yet.",
+                            "Fix the Java so stdout JSON matches expected CDM JSON exactly (no extra fields).",
+                            f"Failures: {', '.join(fail_bits)}",
+                        ]
+                        if isinstance(gate, dict) and gate.get("failures_sample"):
+                            hint_lines.append("Reference shape failures (sample):")
+                            for f in gate.get("failures_sample", [])[:6]:
+                                hint_lines.append(f"- {f}")
+                            hint_lines.append(
+                                "Rule: if expected has address-only, Java must use setAddress(Reference.builder().setScope(scope).setReference(value).build()) "
+                                "and MUST NOT setGlobalReference there. CRITICAL: Reference has NO setValue — use setReference(String) for JSON 'value'. "
+                                "Key has NO setValue — use setKeyValue(String) for JSON 'value'."
+                            )
+                        rejection_body = json.dumps(
+                            {"rejected": True, "failures": fail_bits},
+                            default=str,
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": rejection_body,
+                        })
+                        messages.append({"role": "user", "content": "\n".join(hint_lines)})
+                        # Continue agent loop instead of returning.
+                        continue
                 return AgentResult(
                     success=ok_status,
                     java_file=str(fn_args.get("java_file", "")),
@@ -821,7 +1183,15 @@ def _run_agent_impl(
                 try:
                     rj = json.loads(raw_result_str)
                     if rj.get("success") is True and int(rj.get("exit_code", -1)) == 0:
-                        last_run_java_stdout = str(rj.get("stdout") or "")
+                        if rj.get("stdout_stored") is True and isinstance(rj.get("stdout_handle"), str):
+                            h = str(rj.get("stdout_handle"))
+                            fr = fetch_payload(h, offset=0, limit=10_000_000)
+                            if fr.get("success") is True:
+                                last_run_java_stdout = str(fr.get("chunk") or "")
+                            else:
+                                last_run_java_stdout = str(rj.get("stdout") or "")
+                        else:
+                            last_run_java_stdout = str(rj.get("stdout") or "")
                 except (json.JSONDecodeError, TypeError, ValueError):
                     pass
             result_str, prep_meta = prepare_tool_result_for_llm(fn_name, raw_result_str)

@@ -308,6 +308,44 @@ def _relevant_well_known_imports(
 
 
 _REFERENCE_SCHEMA = "com-rosetta-model-lib-meta-Reference.schema.json"
+_KEY_SCHEMA = "com-rosetta-model-lib-meta-Key.schema.json"
+_METAFIELDS_SCHEMA = "com-rosetta-model-metafields-MetaFields.schema.json"
+
+# Rosetta renames some Java getters when serializing to JSON.
+# JSON property "value" on Reference maps to Java setReference(String) / getReference().
+# JSON property "value" on Key maps to Java setKeyValue(String) / getKeyValue().
+JAVA_SETTER_RENAMES: Dict[str, Dict[str, tuple[str, str]]] = {
+    _REFERENCE_SCHEMA: {
+        "value": (
+            "setReference",
+            "CRITICAL: JSON property 'value' on Reference maps to Java setReference(String), NOT setValue. "
+            "Rosetta renames getReference() -> 'value' in JSON.",
+        ),
+    },
+    _KEY_SCHEMA: {
+        "value": (
+            "setKeyValue",
+            "CRITICAL: JSON property 'value' on Key maps to Java setKeyValue(String), NOT setValue. "
+            "Rosetta renames getKeyValue() -> 'value' in JSON.",
+        ),
+    },
+    _METAFIELDS_SCHEMA: {
+        "location": (
+            "addKey",
+            "CRITICAL: JSON property 'location' on MetaFields maps to Java addKey(Key), NOT addLocation(Key). "
+            "Rosetta renames the adder; the array items are Key objects. "
+            "Use Key.builder().setScope(...).setKeyValue(...).build() for each entry.",
+        ),
+    },
+}
+
+# Rosetta serializes some Java properties under different JSON names.
+# inspect_cdm_json uses this to resolve JSON property → schema property when walking the tree.
+JSON_PROPERTY_RENAMES: Dict[str, Dict[str, str]] = {
+    _METAFIELDS_SCHEMA: {
+        "location": "key",  # Java property "key" serializes as "location" in JSON
+    },
+}
 
 JAVA_TYPE_OVERRIDES: Dict[str, Dict[str, str]] = {
     "tradeDate": {
@@ -345,22 +383,29 @@ def _setter_hint_for_property(
     *,
     is_array: bool,
     ref: Optional[str],
+    parent_schema: Optional[str] = None,
 ) -> tuple[str, Optional[str]]:
+    # Explicit schema-driven renames take priority over default array/setter derivation.
+    if parent_schema and parent_schema in JAVA_SETTER_RENAMES:
+        renames = JAVA_SETTER_RENAMES[parent_schema]
+        if prop_name in renames:
+            return renames[prop_name]
     if is_array:
         return (f"add{prop_name[0].upper()}{prop_name[1:]}", None)
     if prop_name == "address" and ref == _REFERENCE_SCHEMA:
         return (
-            "setGlobalReference",
-            "JSON property 'address' (DOCUMENT scope): use setGlobalReference(String) with "
-            "JSON address.value — NOT Reference.builder(), NOT setReference(Reference), NOT setAddress. "
-            "See inspect_cdm_json reference_patterns_sample.",
+            "setAddress",
+            "JSON property 'address' is a Reference object (scope/value). Build Reference via "
+            "Reference.builder().setScope(\"DOCUMENT\").setReference(address.value).build() and "
+            "set it with setAddress(Reference) on the ReferenceWithMeta* builder. "
+            "CRITICAL: Reference has NO setValue — use setReference(String) for the JSON 'value' field.",
         )
     if prop_name == "reference" and ref == _REFERENCE_SCHEMA:
         return (
             "setReference",
-            "setReference(Reference) is for Rosetta internal identity only. For document-scope "
-            "cross-references from JSON address/globalReference, use setGlobalReference / setExternalReference "
-            "on the ReferenceWithMeta* builder instead.",
+            "setReference(Reference) applies only when the CDM JSON has a property named `reference` with that shape. "
+            "If the JSON has `address` {scope,value}, use setAddress(Reference) — not setReference and not "
+            "setGlobalReference. If the JSON has string fields `globalReference` / `externalReference`, use those setters.",
         )
     if prop_name == "globalReference":
         return ("setGlobalReference", None)
@@ -381,11 +426,16 @@ def _classify_reference_node(node: dict, path: str) -> Optional[Dict[str, object
         addr = node["address"]
         scope = addr.get("scope", "DOCUMENT")
         value = addr.get("value", "")
-        builder_call = f'.setGlobalReference("{value}")'
+        builder_call = (
+            '            .setAddress(com.rosetta.model.lib.meta.Reference.builder()\n'
+            f'                .setScope("{scope}")\n'
+            f'                .setReference("{value}")\n'
+            '                .build())'
+        )
         note = (
             f"JSON has address with value={value!r} (scope={scope!r}). "
-            "Use .setGlobalReference with that value string on the ReferenceWithMeta* builder; "
-            "do not use Reference.builder(), setAddress(), or nested setReference(Reference) for document scope."
+            "Use setAddress(Reference) on the ReferenceWithMeta* builder. "
+            "CRITICAL: Reference has NO setValue — use setReference(String) for the JSON 'value' field."
         )
         return {
             "json_path": path,
@@ -440,12 +490,19 @@ def inspect_cdm_json(json_path: str, detail: str = "full") -> Dict[str, object]:
     reference_pattern_total: Dict[str, int] = {"n": 0}
     max_ref_samples = 40
 
+    def _effective_prop_name(parent_schema_file: str, prop_name: str) -> str:
+        """Apply JSON→schema property rename if applicable."""
+        if parent_schema_file in JSON_PROPERTY_RENAMES:
+            return JSON_PROPERTY_RENAMES[parent_schema_file].get(prop_name, prop_name)
+        return prop_name
+
     def _resolve_prop(parent_schema_file: str, prop_name: str) -> Optional[str]:
         """Get the $ref schema filename for a property of a parent type."""
         schema = idx.get_schema_by_ref(parent_schema_file)
         if schema is None:
             return None
-        prop_def = schema.get("properties", {}).get(prop_name, {})
+        effective = _effective_prop_name(parent_schema_file, prop_name)
+        prop_def = schema.get("properties", {}).get(effective, {})
         ref = prop_def.get("$ref")
         if ref:
             return ref
@@ -458,7 +515,8 @@ def inspect_cdm_json(json_path: str, detail: str = "full") -> Dict[str, object]:
         schema = idx.get_schema_by_ref(parent_schema_file)
         if schema is None:
             return False
-        prop_def = schema.get("properties", {}).get(prop_name, {})
+        effective = _effective_prop_name(parent_schema_file, prop_name)
+        prop_def = schema.get("properties", {}).get(effective, {})
         return prop_def.get("type") == "array"
 
     def walk(
@@ -604,7 +662,9 @@ def inspect_cdm_json(json_path: str, detail: str = "full") -> Dict[str, object]:
                 "warning_type": "location_array_type",
                 "note": (
                     "location arrays on MetaFields contain Key objects, not MetaFields. "
-                    "Use Key.builder().setScope(...).setValue(...).build() for each entry. "
+                    "The Java adder is addKey(Key), NOT addLocation(Key). "
+                    "Use MetaFields.builder().addKey(Key.builder().setScope(...).setKeyValue(...).build()). "
+                    "CRITICAL: Key has NO setValue — JSON 'value' maps to Java setKeyValue(String). "
                     "Import: import com.rosetta.model.lib.meta.Key;"
                 ),
             })
@@ -613,9 +673,9 @@ def inspect_cdm_json(json_path: str, detail: str = "full") -> Dict[str, object]:
 
     ref_note = (
         "For ReferenceWithMeta* builders: use setGlobalReference(String) and setExternalReference(String) "
-        "from JSON globalReference / externalReference. For JSON property 'address' with scope DOCUMENT, "
-        "use setGlobalReference(JSON address.value) — do NOT nest Reference.builder() or use setReference(Reference) "
-        "for document-scope cross-references. There is no setAddress()."
+        "from JSON globalReference / externalReference. For JSON property 'address' (Reference scope/value), "
+        "build Reference.builder().setScope(scope).setReference(value).build() and set it with setAddress(Reference). "
+        "CRITICAL: Reference has NO setValue — JSON 'value' maps to Java setReference(String)."
     )
     wk_note = (
         "MANDATORY: every import line must come from well_known_imports, type_registry "
@@ -670,7 +730,7 @@ def lookup_cdm_schema(type_name: str) -> Dict[str, object]:
         prop_java = idx.schema_ref_to_java_class(ref) if ref else None
 
         setter, setter_note = _setter_hint_for_property(
-            prop_name, is_array=is_array, ref=ref
+            prop_name, is_array=is_array, ref=ref, parent_schema=schema_file
         )
 
         entry: Dict[str, object] = {
@@ -699,8 +759,10 @@ def lookup_cdm_schema(type_name: str) -> Dict[str, object]:
     if "ReferenceWithMeta" in resolved_title or "ReferenceWithMeta" in type_name:
         result["builder_reference_note"] = (
             "ReferenceWithMeta* builders: use setGlobalReference(String) / setExternalReference(String) "
-            "for document-scope refs. JSON 'address' with DOCUMENT scope → setGlobalReference(address.value). "
-            "setReference(Reference) is for internal Rosetta identity, not document cross-refs. No setAddress()."
+            "for refs represented that way in JSON. JSON 'address' is a Reference object: use setAddress(Reference). "
+            "Build the Reference with .setScope(scope).setReference(value).build() — "
+            "Reference has NO setValue, JSON 'value' maps to Java setReference(String). "
+            "setReference(Reference) on the *WithMeta builder is a separate field (Rosetta identity)."
         )
     return result
 
@@ -1143,6 +1205,33 @@ def compile_java(
             f"{len(repeated_patterns)} error pattern(s) repeat. "
             "Fix each pattern in a single batch patch_java_file call; do not patch one line at a time."
         )
+
+    # Consolidate all missing-symbol errors into a single import fix block.
+    missing_symbols: set[str] = set()
+    for e in errors:
+        ms = e.get("missing_symbol")
+        if isinstance(ms, str) and ms:
+            missing_symbols.add(ms)
+    if missing_symbols:
+        resolved_imports: list[str] = []
+        unresolved: list[str] = []
+        for sym in sorted(missing_symbols):
+            fq = WELL_KNOWN_IMPORTS.get(sym)
+            if fq:
+                resolved_imports.append(f"import {fq};")
+            else:
+                unresolved.append(sym)
+        if resolved_imports:
+            out["missing_imports_block"] = {
+                "instruction": (
+                    f"Add ALL {len(resolved_imports)} import(s) below in ONE patch_java_file call. "
+                    "Do NOT fix them one at a time."
+                ),
+                "imports": resolved_imports,
+            }
+        if unresolved:
+            out["unresolved_symbols"] = unresolved
+
     return out
 
 
@@ -1187,20 +1276,46 @@ def run_java(
         }
 
     is_json = False
-    if result.stdout.strip():
+    stdout_full = result.stdout or ""
+    if stdout_full.strip():
         try:
-            json.loads(result.stdout)
+            json.loads(stdout_full)
             is_json = True
         except (json.JSONDecodeError, ValueError):
             pass
 
-    return {
+    # Never truncate valid JSON: store large payloads and return a handle.
+    # This keeps verification (diff_json) correct even when stdout is huge.
+    stdout_preview = stdout_full[:10_000]
+    out: Dict[str, object] = {
         "success": result.returncode == 0,
         "exit_code": result.returncode,
-        "stdout": result.stdout[:10000],
         "stdout_is_valid_json": is_json,
-        "stderr": result.stderr[:3000],
+        "stdout_preview": stdout_preview,
+        "stderr": (result.stderr or "")[:3000],
     }
+    if not is_json:
+        out["stdout"] = stdout_preview
+        return out
+
+    # Valid JSON: return full stdout when small; otherwise store it.
+    # Use char threshold here; the agent loop also has its own tool-output budget logic.
+    if len(stdout_full) <= 50_000:
+        out["stdout"] = stdout_full
+        return out
+
+    stored = store_large_payload(kind="run_java:stdout", payload_json=stdout_full)
+    if stored.get("success") is True:
+        out["stdout_stored"] = True
+        out["stdout_handle"] = stored.get("handle")
+        out["stdout_sha256"] = stored.get("sha256")
+        out["stdout_bytes"] = stored.get("bytes")
+        return out
+
+    # Fallback: if storage failed for some reason, return preview.
+    out["stdout"] = stdout_preview
+    out["stdout_storage_error"] = stored.get("error", "unknown error")
+    return out
 
 
 # ── Tool 11: diff_json ───────────────────────────────────────────────
@@ -1230,12 +1345,74 @@ def diff_json(
     expected_json_path: str,
     actual_json: str,
 ) -> Dict[str, object]:
-    """Deep-compare expected CDM JSON with Java-produced output."""
+    """Strict deep-compare expected CDM JSON with Java-produced output.
+
+    - Object key ordering is ignored (JSON semantics)
+    - Lists are compared positionally (order matters)
+    - Numeric tolerance is applied (see ``_values_equal``)
+    """
     expected = json.loads(Path(expected_json_path).read_text(encoding="utf-8"))
     actual = json.loads(actual_json)
+    # Prefer DeepDiff when available; fall back to deterministic in-house comparator.
+    try:
+        from deepdiff import DeepDiff  # type: ignore[import-not-found]
+
+        dd = DeepDiff(
+            expected,
+            actual,
+            ignore_order=False,
+            ignore_numeric_type_changes=True,
+            math_epsilon=1e-10,
+            verbose_level=2,
+        )
+        dd_dict = dd.to_dict() if hasattr(dd, "to_dict") else dict(dd)  # type: ignore[arg-type]
+        differences: List[Dict[str, object]] = []
+
+        def _add_simple(cat: str, items: object) -> None:
+            if isinstance(items, dict):
+                for k, v in items.items():
+                    differences.append({"type": cat, "path": str(k), "details": v})
+            elif isinstance(items, (list, set, tuple)):
+                for x in items:
+                    differences.append({"type": cat, "path": str(x)})
+            else:
+                differences.append({"type": cat, "details": items})
+
+        for cat, payload in dd_dict.items():
+            _add_simple(cat, payload)
+
+        match = len(dd_dict) == 0
+        total = _count_leaves(expected)
+        if match:
+            matched = total
+        else:
+            diff_leaves = 0
+            for cat, payload in dd_dict.items():
+                if cat in ("values_changed", "type_changes"):
+                    diff_leaves += len(payload) if isinstance(payload, dict) else 0
+                elif cat in ("dictionary_item_removed", "iterable_item_removed"):
+                    if isinstance(payload, dict):
+                        diff_leaves += sum(
+                            _count_leaves(v.get("value", v)) if isinstance(v, dict) else _count_leaves(v)
+                            for v in payload.values()
+                        )
+                    elif isinstance(payload, (set, list)):
+                        diff_leaves += len(payload)
+                elif cat in ("dictionary_item_added", "iterable_item_added"):
+                    pass
+            matched = max(total - diff_leaves, 0)
+        pct = round((matched / total * 100) if total > 0 else 100.0, 1)
+        return {
+            "match": match,
+            "match_percentage": pct,
+            "total_leaf_values": total,
+            "matched_leaf_values": matched,
+            "differences": differences,
+        }
+    except Exception:
+        pass
 
     diffs: List[Dict[str, object]] = []
-    extra: List[str] = []
     total = 0
     matched = 0
 
@@ -1249,57 +1426,53 @@ def diff_json(
                 if key not in act:
                     leaf_count = _count_leaves(exp[key])
                     total += leaf_count
-                    diffs.append({
-                        "path": child_path,
-                        "expected": exp[key],
-                        "actual": None,
-                        "type": "missing_in_actual",
-                    })
+                    diffs.append(
+                        {"path": child_path, "expected": exp[key], "actual": None, "type": "missing_in_actual"}
+                    )
                 elif key not in exp:
-                    extra.append(child_path)
+                    leaf_count = _count_leaves(act[key])
+                    total += leaf_count
+                    diffs.append(
+                        {"path": child_path, "expected": None, "actual": act[key], "type": "extra_in_actual"}
+                    )
                 else:
                     compare(exp[key], act[key], child_path)
+            return
 
-        elif isinstance(exp, list) and isinstance(act, list):
+        if isinstance(exp, list) and isinstance(act, list):
             for i in range(max(len(exp), len(act))):
                 child_path = f"{path}[{i}]"
                 if i >= len(act):
                     leaf_count = _count_leaves(exp[i])
                     total += leaf_count
-                    diffs.append({
-                        "path": child_path,
-                        "expected": exp[i],
-                        "actual": None,
-                        "type": "missing_in_actual",
-                    })
+                    diffs.append(
+                        {"path": child_path, "expected": exp[i], "actual": None, "type": "missing_in_actual"}
+                    )
                 elif i >= len(exp):
-                    extra.append(child_path)
+                    leaf_count = _count_leaves(act[i])
+                    total += leaf_count
+                    diffs.append(
+                        {"path": child_path, "expected": None, "actual": act[i], "type": "extra_in_actual"}
+                    )
                 else:
                     compare(exp[i], act[i], child_path)
+            return
 
+        total += 1
+        if _values_equal(exp, act):
+            matched += 1
         else:
-            total += 1
-            if _values_equal(exp, act):
-                matched += 1
-            else:
-                diff_type = "type_mismatch" if type(exp) is not type(act) else "value_mismatch"
-                diffs.append({
-                    "path": path,
-                    "expected": exp,
-                    "actual": act,
-                    "type": diff_type,
-                })
+            diff_type = "type_mismatch" if type(exp) is not type(act) else "value_mismatch"
+            diffs.append({"path": path, "expected": exp, "actual": act, "type": diff_type})
 
     compare(expected, actual, "$")
-
     pct = (matched / total * 100) if total > 0 else 100.0
     return {
         "match": len(diffs) == 0,
         "match_percentage": round(pct, 1),
         "total_leaf_values": total,
         "matched_leaf_values": matched,
-        "differences": diffs[:50],
-        "extra_in_actual": extra[:20],
+        "differences": diffs,
     }
 
 
