@@ -126,24 +126,7 @@ def transform_fx_spot_forward_like_to_cdm_v6(model: NormalizedFxForward) -> Dict
             "partyReference": _party_ref(pid),
         })
 
-    buyer_ref = model.buyerPartyReference
-    seller_ref = model.sellerPartyReference
-    if not buyer_ref and len(model.parties) >= 1:
-        buyer_ref = model.parties[0].get("id")
-    if not seller_ref and len(model.parties) >= 2:
-        seller_ref = model.parties[1].get("id")
-
-    pr_nodes: List[Dict[str, object]] = []
-    if buyer_ref:
-        pr_nodes.append({
-            "role": "Buyer",
-            "partyReference": _party_ref(buyer_ref, dual=False),
-        })
-    if seller_ref:
-        pr_nodes.append({
-            "role": "Seller",
-            "partyReference": _party_ref(seller_ref, dual=False),
-        })
+    # Note: we intentionally do not emit trade.partyRole for FX forwards/spots.
 
     settlement_date_node: Dict[str, object] = {"valueDate": model.valueDate}
     add_global_key(settlement_date_node)
@@ -260,7 +243,6 @@ def transform_fx_spot_forward_like_to_cdm_v6(model: NormalizedFxForward) -> Dict
         "tradeIdentifier": id_nodes,
         "party": party_nodes,
         "counterparty": cp_nodes,
-        "partyRole": pr_nodes,
         "product": product,
         "tradeLot": [{"priceQuantity": [price_quantity]}],
     }

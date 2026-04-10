@@ -217,6 +217,8 @@ def _apply_mapping_compliance_stage(
     if not overall_compliant:
         failure_reason = "ROSETTA_INFRA_UNAVAILABLE" if rosetta_error else "COMPLIANCE_NOT_REACHED"
 
+    agent_coverage_gaps = mapping_result.best_coverage_gaps if mapping_result else -1
+
     compliance = {
         "deterministic_passed": deterministic_passed,
         "agent_passed": agent_passed,
@@ -233,8 +235,11 @@ def _apply_mapping_compliance_stage(
             "schema_error_count": agent_schema_err,
             "semantic_error_count": agent_sem_err,
             "rosetta_failure_count": agent_ros_fail,
+            "coverage_gaps": agent_coverage_gaps,
         },
         "rosetta_report": agent_rosetta_report,
+        "skill_id": mapping_result.skill_id if mapping_result else None,
+        "skill_version": mapping_result.skill_version if mapping_result else None,
     }
 
     review_ticket = None

@@ -67,7 +67,8 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "nonDeliverableForward",
                 ],
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                # CDM FX examples model deliverable settlement as "Cash".
+                "physical_value": "CASH",
             },
             "settlementCurrency": {
                 "required": False,
@@ -178,7 +179,7 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "nonDeliverableForward",
                 ],
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                "physical_value": "CASH",
             },
             "settlementCurrency": {
                 "required": False,
@@ -349,7 +350,7 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "fxSingleLeg[0]/nonDeliverableForward",
                 ],
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                "physical_value": "CASH",
             },
             "farSettlementType": {
                 "required": False,
@@ -367,7 +368,7 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "fxSingleLeg[1]/nonDeliverableForward",
                 ],
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                "physical_value": "CASH",
             },
             "buyerPartyReference": {
                 "required": False,
@@ -561,7 +562,7 @@ _BASE_RULESETS: Dict[str, Dict[str, Any]] = {
                     "nonDeliverableForward",
                 ],
                 "cash_value": "CASH",
-                "physical_value": "PHYSICAL",
+                "physical_value": "CASH",
             },
         },
         "derived": {},

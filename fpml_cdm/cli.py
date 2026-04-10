@@ -95,12 +95,9 @@ def cmd_validate_schema(args: argparse.Namespace) -> int:
 
 _FAILURE_HINTS = {
     "TradeSettlementPayout": (
-        "Trade is missing 'partyRole' entries with Buyer/Seller roles.\n"
-        "  FIX: Add partyRole array to the Trade object, e.g.:\n"
-        '       "partyRole": [\n'
-        '         {"role": "Buyer", "partyReference": {"globalReference": "party1"}},\n'
-        '         {"role": "Seller", "partyReference": {"globalReference": "party2"}}\n'
-        "       ]"
+        "Trade settlement payout is invalid.\n"
+        "  FIX: Ensure Trade has 'counterparty' (Party1/Party2) and SettlementPayout.payerReceiver uses those roles.\n"
+        "       Do NOT add trade.partyRole (Buyer/Seller) for FX spot/forward-like confirmations."
     ),
     "SettlementDateBusinessDays": (
         "Settlement date uses a field name the validator doesn't recognize.\n"
@@ -474,6 +471,123 @@ def cmd_generate_java(args: argparse.Namespace) -> int:
     return 0 if result.success else 1
 
 
+def cmd_run_mapping_agent(args: argparse.Namespace) -> int:
+    """Run the mapping agent standalone: FpML -> CDM JSON + trace."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    from .mapping_agent.agent import MappingAgentConfig, run_mapping_agent
+
+    err = sys.stderr
+
+    try:
+        fpml_path = _resolve_existing_input_file(args.input)
+    except FileNotFoundError as exc:
+        err.write(f"\n  FAIL: FpML file not found: {args.input}\n")
+        err.write(f"  Resolved to: {exc.args[0]}\n")
+        return 2
+
+    # Resolve LLM client (OpenRouter default)
+    provider = getattr(args, "provider", "openrouter")
+    if provider == "openrouter":
+        from .java_gen.openrouter_client import OpenRouterClient
+
+        api_key = (getattr(args, "api_key", None) or os.environ.get("OPENROUTER_API_KEY", "")).strip()
+        if not api_key:
+            err.write("\n  FAIL: OPENROUTER_API_KEY missing. Set it in env or pass --api-key.\n")
+            return 2
+        llm_client = OpenRouterClient(api_key=api_key)
+    elif provider == "openai":
+        try:
+            import openai
+        except ImportError:
+            err.write("\n  FAIL: openai package not installed. Run: pip install openai\n")
+            return 2
+        llm_client = openai.OpenAI(
+            api_key=getattr(args, "api_key", None) or os.environ.get("OPENAI_API_KEY"),
+            base_url=getattr(args, "base_url", None) or None,
+        )
+    else:
+        err.write(f"\n  FAIL: Unknown provider: {provider}\n")
+        return 2
+
+    model = args.model
+    mm = getattr(args, "mapping_mode", "ruleset") or "ruleset"
+    if isinstance(mm, str):
+        mm = mm.strip().lower().replace("-", "_")
+    cfg = MappingAgentConfig(
+        max_iterations=args.max_iterations,
+        max_tool_calls=args.max_tool_calls,
+        timeout_seconds=args.timeout,
+        semantic_no_improve_limit=args.no_improve_limit,
+        enable_rosetta=not args.no_rosetta,
+        rosetta_timeout_seconds=args.rosetta_timeout,
+        mapping_mode=mm,
+    )
+
+    quiet = getattr(args, "quiet", False)
+    if not quiet:
+        err.write(f"\n  FpML input:  {fpml_path}\n")
+        err.write(f"  Provider:    {provider}\n")
+        err.write(f"  Model:       {model}\n")
+        err.write(f"  Mapping mode:{cfg.mapping_mode}\n")
+        err.write(f"  Max iters:   {cfg.max_iterations}\n")
+        err.write(f"  Timeout:     {cfg.timeout_seconds}s\n")
+        err.write(f"  Rosetta:     {'on' if cfg.enable_rosetta else 'off'}\n\n")
+
+    try:
+        result = run_mapping_agent(
+            fpml_path=str(fpml_path),
+            llm_client=llm_client,
+            model=model,
+            config=cfg,
+            log_progress=not quiet,
+        )
+    except ValueError as exc:
+        err.write(f"\n  FAIL: {exc}\n")
+        return 1
+    except Exception as exc:
+        err.write(f"\n  FAIL: {type(exc).__name__}: {exc}\n")
+        return 1
+
+    # Write CDM output
+    output_dir = Path(getattr(args, "output_dir", "tmp"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cdm_output = getattr(args, "output_cdm", None) or str(output_dir / "mapping_output_cdm.json")
+    _write_json(result.best_cdm_json, cdm_output)
+
+    if getattr(args, "write_normalized", False) and result.best_normalized:
+        norm_path = str(output_dir / "mapping_output_normalized.json")
+        _write_json(result.best_normalized, norm_path)
+
+    # Write trace
+    if args.trace_output:
+        _write_json({"trace": result.trace, "result": result.to_dict()}, args.trace_output)
+
+    # Summary
+    if not quiet:
+        err.write(f"\n  Completed in {result.duration_seconds:.1f}s\n")
+        err.write(f"  Iterations:     {result.iterations}\n")
+        err.write(f"  Tool calls:     {result.total_tool_calls}\n")
+        err.write(f"  Adapter:        {result.adapter_id}\n")
+        if result.skill_id:
+            err.write(f"  Skill:          {result.skill_id} v{result.skill_version}\n")
+        err.write(f"  Schema errors:  {result.best_schema_error_count}\n")
+        err.write(f"  Semantic errors:{result.best_semantic_error_count}\n")
+        err.write(f"  Rosetta fails:  {result.best_rosetta_failure_count}\n")
+        err.write(f"  CDM output:     {cdm_output}\n")
+        if args.trace_output:
+            err.write(f"  Trace:          {args.trace_output}\n")
+        if result.finish_summary:
+            err.write(f"  Agent summary:  {result.finish_summary}\n")
+
+    if result.best_schema_error_count > 0 or result.best_semantic_error_count > 0:
+        return 1
+    return 0
+
+
 def cmd_generate_java_from_fpml(args: argparse.Namespace) -> int:
     """Generate Java code from FpML via mapping agent + existing Java-gen agent."""
     from dotenv import load_dotenv
@@ -743,6 +857,35 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     java_gen_parser.set_defaults(func=cmd_generate_java)
+
+    # --- run-mapping-agent ---
+    mapping_parser = subparsers.add_parser(
+        "run-mapping-agent",
+        help="Run the mapping agent standalone: FpML -> CDM JSON + trace (no Java)",
+    )
+    mapping_parser.add_argument("input", help="Input FpML XML file")
+    mapping_parser.add_argument("--provider", choices=("openrouter", "openai"), default="openrouter", help="LLM provider (default: openrouter)")
+    mapping_parser.add_argument("--model", default="minimax/minimax-m2.7", help="LLM model name (default: minimax/minimax-m2.7)")
+    mapping_parser.add_argument("--api-key", default=None, help="API key (env: OPENROUTER_API_KEY or OPENAI_API_KEY)")
+    mapping_parser.add_argument("--base-url", default=None, help="Base URL (for --provider openai only)")
+    mapping_parser.add_argument("--max-iterations", type=int, default=10, help="Max agent iterations (default: 10)")
+    mapping_parser.add_argument("--max-tool-calls", type=int, default=80, help="Max total tool calls (default: 80)")
+    mapping_parser.add_argument("--timeout", type=int, default=300, help="Agent timeout in seconds (default: 300)")
+    mapping_parser.add_argument("--no-improve-limit", type=int, default=3, help="Stop after N iterations with no improvement (default: 3)")
+    mapping_parser.add_argument("--no-rosetta", action="store_true", help="Disable Rosetta validation")
+    mapping_parser.add_argument("--rosetta-timeout", type=int, default=60, help="Rosetta timeout in seconds (default: 60)")
+    mapping_parser.add_argument("--output-dir", default="tmp", help="Output directory (default: tmp)")
+    mapping_parser.add_argument("--output-cdm", default=None, help="CDM JSON output path (default: <output-dir>/mapping_output_cdm.json)")
+    mapping_parser.add_argument("--write-normalized", action="store_true", help="Also write normalized JSON")
+    mapping_parser.add_argument("--trace-output", default=None, help="Write agent trace JSON to file")
+    mapping_parser.add_argument(
+        "--mapping-mode",
+        choices=("ruleset", "llm-native"),
+        default="ruleset",
+        help="ruleset: patch deterministic parser; llm-native: model submits CDM via submit_llm_cdm (default: ruleset)",
+    )
+    mapping_parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
+    mapping_parser.set_defaults(func=cmd_run_mapping_agent)
 
     fpml_to_java_parser = subparsers.add_parser(
         "generate-java-from-fpml",

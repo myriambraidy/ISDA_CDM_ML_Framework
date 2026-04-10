@@ -24,6 +24,17 @@ from .types import (
 SCHEMA_ROOT = Path(__file__).resolve().parent.parent / "schemas"
 
 
+def _dget(obj: Any, *keys: str, default: Any = None) -> Any:
+    """Safely traverse nested dicts without crashing when an intermediate value is a non-dict (e.g. a bare string)."""
+    for key in keys:
+        if not isinstance(obj, dict):
+            return default
+        obj = obj.get(key)
+    if obj is None:
+        return default
+    return obj
+
+
 def _get_schema(schema_name: str) -> Dict[str, Any]:
     schema_path = SCHEMA_ROOT / schema_name
     if not schema_path.exists():
@@ -130,20 +141,44 @@ def _float_equal(left: Optional[float], right: Optional[float], tol: float) -> b
     return abs(left - right) <= tol
 
 
+def _safe_list_get(lst: Any, idx: int, default: Any = None) -> Any:
+    """Safely index into a list, returning *default* if *lst* is not a list or *idx* is out of range."""
+    if not isinstance(lst, list):
+        return default if default is not None else {}
+    if idx < len(lst):
+        v = lst[idx]
+        return v if v is not None else (default if default is not None else {})
+    return default if default is not None else {}
+
+
 def _semantic_validation_fx_forward_like(
     model: NormalizedFxForward, cdm_data: Dict[str, Any]
 ) -> Tuple[List[ValidationIssue], MappingScore]:
     issues: List[ValidationIssue] = []
 
-    trade = cdm_data.get("trade", {})
-    trade_lot = (trade.get("tradeLot", [{}]) or [{}])[0]
-    price_quantity = (trade_lot.get("priceQuantity", [{}]) or [{}])[0]
-    quantities = price_quantity.get("quantity", []) or []
-    prices = price_quantity.get("price", []) or []
-    payout_list = trade.get("product", {}).get("economicTerms", {}).get("payout", [])
-    first_payout = payout_list[0] if payout_list else {}
-    settlement_payout = first_payout.get("SettlementPayout", {})
-    settlement_terms = settlement_payout.get("settlementTerms", {})
+    trade = cdm_data.get("trade") if isinstance(cdm_data, dict) else {}
+    if not isinstance(trade, dict):
+        trade = {}
+    trade_lots = trade.get("tradeLot") if isinstance(trade.get("tradeLot"), list) else [{}]
+    trade_lot = _safe_list_get(trade_lots, 0, {})
+    pq_list = trade_lot.get("priceQuantity") if isinstance(trade_lot, dict) and isinstance(trade_lot.get("priceQuantity"), list) else [{}]
+    price_quantity = _safe_list_get(pq_list, 0, {})
+    quantities = price_quantity.get("quantity", []) if isinstance(price_quantity, dict) else []
+    if not isinstance(quantities, list):
+        quantities = []
+    prices = price_quantity.get("price", []) if isinstance(price_quantity, dict) else []
+    if not isinstance(prices, list):
+        prices = []
+    payout_list = _dget(trade, "product", "economicTerms", "payout", default=[])
+    if not isinstance(payout_list, list):
+        payout_list = []
+    first_payout = _safe_list_get(payout_list, 0, {})
+    settlement_payout = first_payout.get("SettlementPayout", {}) if isinstance(first_payout, dict) else {}
+    if not isinstance(settlement_payout, dict):
+        settlement_payout = {}
+    settlement_terms = settlement_payout.get("settlementTerms", {}) if isinstance(settlement_payout, dict) else {}
+    if not isinstance(settlement_terms, dict):
+        settlement_terms = {}
 
     checks_total = 0
     checks_matched = 0
@@ -162,14 +197,17 @@ def _semantic_validation_fx_forward_like(
                 )
             )
 
-    cdm_trade_date = trade.get("tradeDate", {}).get("value")
+    cdm_trade_date = _dget(trade, "tradeDate", "value")
     check(cdm_trade_date == model.tradeDate, f"Trade date mismatch: model={model.tradeDate}, cdm={cdm_trade_date}", "trade.tradeDate.value")
 
-    cdm_settlement_date = (
-        settlement_terms
-        .get("settlementDate", {})
-        .get("valueDate")
+    # For FX confirmation-style trades, we intentionally do not emit trade.partyRole.
+    check(
+        "partyRole" not in trade,
+        "trade.partyRole must be omitted for FX spot/forward-like confirmations (use counterparty + payerReceiver instead).",
+        "trade.partyRole",
     )
+
+    cdm_settlement_date = _dget(settlement_terms, "settlementDate", "valueDate")
     check(
         cdm_settlement_date == model.valueDate,
         f"Value date mismatch: model={model.valueDate}, cdm={cdm_settlement_date}",
@@ -181,24 +219,137 @@ def _semantic_validation_fx_forward_like(
         "CASH": "Cash",
         "REGULAR": "Physical",
     }.get(model.settlementType, "Physical")
-    cdm_settlement_type = settlement_terms.get("settlementType")
+    cdm_settlement_type = settlement_terms.get("settlementType") if isinstance(settlement_terms, dict) else None
     check(
         cdm_settlement_type == expected_settlement_enum,
         f"Settlement type mismatch: model={expected_settlement_enum}, cdm={cdm_settlement_type}",
         "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementType",
     )
 
-    quantity1 = quantities[0] if len(quantities) > 0 else {}
-    quantity2 = quantities[1] if len(quantities) > 1 else {}
+    # Counterparty role assignment: Party1/Party2 must follow exchangedCurrency1 payer/receiver (buyer/seller refs in normalized model).
+    # In normalized forward-like, buyerPartyReference is extracted from exchangedCurrency1/payerPartyReference (when present).
+    cp_list = trade.get("counterparty") if isinstance(trade.get("counterparty"), list) else []
+    party1_ref = None
+    party2_ref = None
+    for cp in cp_list:
+        if not isinstance(cp, dict):
+            continue
+        role = cp.get("role")
+        pref = cp.get("partyReference", {})
+        if not isinstance(pref, dict):
+            pref = {}
+        ext = pref.get("externalReference") or pref.get("globalReference")
+        if role == "Party1":
+            party1_ref = ext
+        elif role == "Party2":
+            party2_ref = ext
+    if model.buyerPartyReference:
+        check(
+            party1_ref == model.buyerPartyReference,
+            f"Counterparty Party1 mismatch: expected={model.buyerPartyReference}, got={party1_ref}",
+            "trade.counterparty[role=Party1].partyReference.externalReference",
+        )
+    if model.sellerPartyReference:
+        check(
+            party2_ref == model.sellerPartyReference,
+            f"Counterparty Party2 mismatch: expected={model.sellerPartyReference}, got={party2_ref}",
+            "trade.counterparty[role=Party2].partyReference.externalReference",
+        )
 
-    cdm_currency1 = quantity1.get("value", {}).get("unit", {}).get("currency", {}).get("value")
-    cdm_currency2 = quantity2.get("value", {}).get("unit", {}).get("currency", {}).get("value")
+    # Party identity preservation: party.meta.externalKey -> partyId.identifier.value should match normalized parties[id].name (partyId value).
+    party_nodes = trade.get("party") if isinstance(trade.get("party"), list) else []
+    norm_party_id_by_external: Dict[str, Optional[str]] = {}
+    for p in model.parties:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id")
+        pname = p.get("name")
+        if pid:
+            norm_party_id_by_external[str(pid)] = str(pname) if pname is not None else None
+    for p in party_nodes:
+        if not isinstance(p, dict):
+            continue
+        ext_key = _dget(p, "meta", "externalKey")
+        if not ext_key:
+            continue
+        cdm_partyid = _dget(_safe_list_get(p.get("partyId") if isinstance(p.get("partyId"), list) else [], 0, {}), "identifier", "value")
+        expected_partyid = norm_party_id_by_external.get(str(ext_key))
+        if expected_partyid:
+            check(
+                cdm_partyid == expected_partyid,
+                f"PartyId mismatch for externalKey={ext_key}: expected={expected_partyid}, got={cdm_partyid}",
+                f"trade.party[meta.externalKey={ext_key}].partyId[0].identifier.value",
+            )
+
+    # Trade identifiers: enforce issuerReference mapping and duplicate control (2 entries per distinct tradeId).
+    ti_list = trade.get("tradeIdentifier") if isinstance(trade.get("tradeIdentifier"), list) else []
+    # Count occurrences per tradeId value in CDM
+    cdm_tradeid_counts: Dict[str, int] = {}
+    cdm_issuer_by_tradeid: Dict[str, set] = {}
+    for ti in ti_list:
+        if not isinstance(ti, dict):
+            continue
+        assigned = ti.get("assignedIdentifier") if isinstance(ti.get("assignedIdentifier"), list) else []
+        if not assigned:
+            continue
+        ident0 = _safe_list_get(assigned, 0, {})
+        trade_id_val = _dget(ident0, "identifier", "value")
+        if not trade_id_val:
+            continue
+        trade_id_val = str(trade_id_val)
+        cdm_tradeid_counts[trade_id_val] = cdm_tradeid_counts.get(trade_id_val, 0) + 1
+        issuer_ref = _dget(ti, "issuerReference", "externalReference")
+        if issuer_ref:
+            cdm_issuer_by_tradeid.setdefault(trade_id_val, set()).add(str(issuer_ref))
+    for t in model.tradeIdentifiers:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("tradeId")
+        issuer = t.get("issuer")
+        scheme = t.get("scheme")
+        if not tid:
+            continue
+        tid = str(tid)
+        if issuer:
+            # Must have at least one issuerReference entry with matching issuer and scheme.
+            found = False
+            for ti in ti_list:
+                if not isinstance(ti, dict):
+                    continue
+                if _dget(ti, "issuerReference", "externalReference") != issuer:
+                    continue
+                assigned = ti.get("assignedIdentifier") if isinstance(ti.get("assignedIdentifier"), list) else []
+                ident0 = _safe_list_get(assigned, 0, {})
+                if _dget(ident0, "identifier", "value") != tid:
+                    continue
+                if scheme and _dget(ident0, "identifier", "meta", "scheme") not in (scheme, None):
+                    continue
+                found = True
+                break
+            check(
+                found,
+                f"TradeIdentifier issuer mismatch for tradeId={tid}: expected issuerReference.externalReference={issuer}",
+                "trade.tradeIdentifier[].issuerReference.externalReference",
+            )
+        # Duplicate control: official pattern emits 2 entries per distinct tradeId.
+        cnt = cdm_tradeid_counts.get(tid, 0)
+        check(
+            cnt in (0, 2),
+            f"TradeIdentifier count mismatch for tradeId={tid}: expected 2 entries, got {cnt}",
+            "trade.tradeIdentifier",
+        )
+
+    quantity1 = _safe_list_get(quantities, 0, {})
+    quantity2 = _safe_list_get(quantities, 1, {})
+
+    cdm_currency1 = _dget(quantity1, "value", "unit", "currency", "value")
+    cdm_currency2 = _dget(quantity2, "value", "unit", "currency", "value")
 
     check(cdm_currency1 == model.currency1, f"Currency1 mismatch: model={model.currency1}, cdm={cdm_currency1}", "trade.tradeLot[0].priceQuantity[0].quantity[0].unit.currency.value")
     check(cdm_currency2 == model.currency2, f"Currency2 mismatch: model={model.currency2}, cdm={cdm_currency2}", "trade.tradeLot[0].priceQuantity[0].quantity[1].unit.currency.value")
 
-    cdm_amount1 = quantity1.get("value", {}).get("value")
-    cdm_amount2 = quantity2.get("value", {}).get("value")
+    cdm_amount1 = _dget(quantity1, "value", "value")
+    cdm_amount2 = _dget(quantity2, "value", "value")
 
     check(
         _float_equal(model.amount1, float(cdm_amount1) if cdm_amount1 is not None else None, 0.01),
@@ -212,11 +363,13 @@ def _semantic_validation_fx_forward_like(
     )
 
     if model.exchangeRate is not None:
-        price = prices[0] if prices else {}
-        price_inner = price.get("value", {})
+        price = _safe_list_get(prices, 0, {})
+        price_inner = price.get("value", {}) if isinstance(price, dict) else {}
+        if not isinstance(price_inner, dict):
+            price_inner = {}
         cdm_rate = price_inner.get("value")
-        cdm_quote = price_inner.get("unit", {}).get("currency", {}).get("value")
-        cdm_base = price_inner.get("perUnitOf", {}).get("currency", {}).get("value")
+        cdm_quote = _dget(price_inner, "unit", "currency", "value")
+        cdm_base = _dget(price_inner, "perUnitOf", "currency", "value")
         check(
             _float_equal(model.exchangeRate, float(cdm_rate) if cdm_rate is not None else None, 0.0001),
             f"Exchange rate mismatch: model={model.exchangeRate}, cdm={cdm_rate}",
@@ -234,17 +387,23 @@ def _semantic_validation_fx_forward_like(
         )
 
     if model.settlementType == "CASH":
-        cdm_settlement_currency = settlement_terms.get("settlementCurrency", {}).get("value")
+        cdm_settlement_currency = _dget(settlement_terms, "settlementCurrency", "value")
         check(
             cdm_settlement_currency == model.settlementCurrency,
             f"Settlement currency mismatch: model={model.settlementCurrency}, cdm={cdm_settlement_currency}",
             "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementCurrency.value",
         )
 
-    payer_receiver = settlement_payout.get("payerReceiver", {})
+    payer_receiver = settlement_payout.get("payerReceiver", {}) if isinstance(settlement_payout, dict) else {}
+    if not isinstance(payer_receiver, dict):
+        payer_receiver = {}
     counterparties: Dict[str, str] = {}
-    for cp in trade.get("counterparty", []):
+    for cp in (trade.get("counterparty") or []):
+        if not isinstance(cp, dict):
+            continue
         ref = cp.get("partyReference", {})
+        if not isinstance(ref, dict):
+            continue
         key = ref.get("externalReference") or ref.get("globalReference")
         if key:
             counterparties[key] = cp.get("role", "")
@@ -350,18 +509,29 @@ def _semantic_validation_fx_swap(
             )
         )
 
-    trade = cdm_data.get("trade", {})
-    check(trade.get("tradeDate", {}).get("value") == model.tradeDate, "Trade date mismatch", "trade.tradeDate.value")
+    trade = cdm_data.get("trade", {}) if isinstance(cdm_data, dict) else {}
+    if not isinstance(trade, dict):
+        trade = {}
+    check(
+        "partyRole" not in trade,
+        "trade.partyRole must be omitted for FX confirmations (use counterparty + payerReceiver instead).",
+        "trade.partyRole",
+    )
+    check(_dget(trade, "tradeDate", "value") == model.tradeDate, "Trade date mismatch", "trade.tradeDate.value")
 
-    payouts = trade.get("product", {}).get("economicTerms", {}).get("payout", []) or []
+    payouts = _dget(trade, "product", "economicTerms", "payout", default=[])
+    if not isinstance(payouts, list):
+        payouts = []
     check(len(payouts) >= 2, "FX swap must emit at least two payouts", "trade.product.economicTerms.payout")
     if len(payouts) >= 2:
-        near = payouts[0].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementDate", {}).get("valueDate")
-        far = payouts[1].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementDate", {}).get("valueDate")
+        p0 = _safe_list_get(payouts, 0, {})
+        p1 = _safe_list_get(payouts, 1, {})
+        near = _dget(p0, "SettlementPayout", "settlementTerms", "settlementDate", "valueDate")
+        far = _dget(p1, "SettlementPayout", "settlementTerms", "settlementDate", "valueDate")
         check(near == model.nearValueDate, "Near value date mismatch", "trade.product.economicTerms.payout[0].SettlementPayout.settlementTerms.settlementDate.valueDate")
         check(far == model.farValueDate, "Far value date mismatch", "trade.product.economicTerms.payout[1].SettlementPayout.settlementTerms.settlementDate.valueDate")
-        near_st = payouts[0].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementType")
-        far_st = payouts[1].get("SettlementPayout", {}).get("settlementTerms", {}).get("settlementType")
+        near_st = _dget(p0, "SettlementPayout", "settlementTerms", "settlementType")
+        far_st = _dget(p1, "SettlementPayout", "settlementTerms", "settlementType")
         expected_near_st = {"PHYSICAL": "Physical", "CASH": "Cash", "REGULAR": "Physical"}.get(model.nearSettlementType, "Physical")
         expected_far_st = {"PHYSICAL": "Physical", "CASH": "Cash", "REGULAR": "Physical"}.get(model.farSettlementType, "Physical")
         check(
@@ -375,13 +545,21 @@ def _semantic_validation_fx_swap(
             "trade.product.economicTerms.payout[1].SettlementPayout.settlementTerms.settlementType",
         )
         counterparties: Dict[str, str] = {}
-        for cp in trade.get("counterparty", []):
+        for cp in (trade.get("counterparty") or []):
+            if not isinstance(cp, dict):
+                continue
             ref = cp.get("partyReference", {})
+            if not isinstance(ref, dict):
+                continue
             key = ref.get("externalReference") or ref.get("globalReference")
             if key:
                 counterparties[key] = cp.get("role", "")
-        near_pr = payouts[0].get("SettlementPayout", {}).get("payerReceiver", {})
-        far_pr = payouts[1].get("SettlementPayout", {}).get("payerReceiver", {})
+        near_pr = _dget(p0, "SettlementPayout", "payerReceiver", default={})
+        if not isinstance(near_pr, dict):
+            near_pr = {}
+        far_pr = _dget(p1, "SettlementPayout", "payerReceiver", default={})
+        if not isinstance(far_pr, dict):
+            far_pr = {}
         if model.nearCurrency2PayerPartyReference:
             near_expected_payer = counterparties.get(model.nearCurrency2PayerPartyReference, "Party1")
             check(
@@ -411,30 +589,39 @@ def _semantic_validation_fx_swap(
                 "trade.product.economicTerms.payout[1].SettlementPayout.payerReceiver.receiver",
             )
 
-    pqs = ((trade.get("tradeLot", [{}]) or [{}])[0].get("priceQuantity", []) or [])
+    trade_lot = _safe_list_get(trade.get("tradeLot") if isinstance(trade.get("tradeLot"), list) else [{}], 0, {})
+    pqs = trade_lot.get("priceQuantity", []) if isinstance(trade_lot, dict) else []
+    if not isinstance(pqs, list):
+        pqs = []
     check(len(pqs) >= 2, "FX swap must emit two priceQuantity entries", "trade.tradeLot[0].priceQuantity")
     if len(pqs) >= 2:
-        near_qty = pqs[0].get("quantity", []) or []
-        far_qty = pqs[1].get("quantity", []) or []
+        near_pq = _safe_list_get(pqs, 0, {})
+        far_pq = _safe_list_get(pqs, 1, {})
+        near_qty = near_pq.get("quantity", []) if isinstance(near_pq, dict) else []
+        if not isinstance(near_qty, list):
+            near_qty = []
+        far_qty = far_pq.get("quantity", []) if isinstance(far_pq, dict) else []
+        if not isinstance(far_qty, list):
+            far_qty = []
         if len(near_qty) >= 2:
             check(
-                near_qty[0].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.nearCurrency1,
+                _dget(_safe_list_get(near_qty, 0, {}), "value", "unit", "currency", "value") == model.nearCurrency1,
                 "Near leg currency1 mismatch",
                 "trade.tradeLot[0].priceQuantity[0].quantity[0].value.unit.currency.value",
             )
             check(
-                near_qty[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.nearCurrency2,
+                _dget(_safe_list_get(near_qty, 1, {}), "value", "unit", "currency", "value") == model.nearCurrency2,
                 "Near leg currency2 mismatch",
                 "trade.tradeLot[0].priceQuantity[0].quantity[1].value.unit.currency.value",
             )
         if len(far_qty) >= 2:
             check(
-                far_qty[0].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.farCurrency1,
+                _dget(_safe_list_get(far_qty, 0, {}), "value", "unit", "currency", "value") == model.farCurrency1,
                 "Far leg currency1 mismatch",
                 "trade.tradeLot[0].priceQuantity[1].quantity[0].value.unit.currency.value",
             )
             check(
-                far_qty[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.farCurrency2,
+                _dget(_safe_list_get(far_qty, 1, {}), "value", "unit", "currency", "value") == model.farCurrency2,
                 "Far leg currency2 mismatch",
                 "trade.tradeLot[0].priceQuantity[1].quantity[1].value.unit.currency.value",
             )
@@ -467,36 +654,61 @@ def _semantic_validation_fx_option(
             )
         )
 
-    trade = cdm_data.get("trade", {})
-    check(trade.get("tradeDate", {}).get("value") == model.tradeDate, "Trade date mismatch", "trade.tradeDate.value")
+    trade = cdm_data.get("trade", {}) if isinstance(cdm_data, dict) else {}
+    if not isinstance(trade, dict):
+        trade = {}
+    check(
+        "partyRole" not in trade,
+        "trade.partyRole must be omitted for FX confirmations (buyer/seller is modeled on OptionPayout.buyerSeller).",
+        "trade.partyRole",
+    )
+    check(_dget(trade, "tradeDate", "value") == model.tradeDate, "Trade date mismatch", "trade.tradeDate.value")
 
-    payouts = trade.get("product", {}).get("economicTerms", {}).get("payout", []) or []
+    payouts = _dget(trade, "product", "economicTerms", "payout", default=[])
+    if not isinstance(payouts, list):
+        payouts = []
     check(len(payouts) >= 1, "FX option must emit at least one payout", "trade.product.economicTerms.payout")
     op: Dict[str, Any] = {}
     if payouts:
-        check("OptionPayout" in payouts[0], "First payout must be OptionPayout", "trade.product.economicTerms.payout[0]")
-        op = (payouts[0] or {}).get("OptionPayout", {}) or {}
+        p0 = _safe_list_get(payouts, 0, {})
+        check(isinstance(p0, dict) and "OptionPayout" in p0, "First payout must be OptionPayout", "trade.product.economicTerms.payout[0]")
+        op = _dget(p0, "OptionPayout", default={})
+        if not isinstance(op, dict):
+            op = {}
 
-    et = op.get("exerciseTerms", {})
+    et = op.get("exerciseTerms", {}) if isinstance(op, dict) else {}
+    if not isinstance(et, dict):
+        et = {}
     exp_dates = et.get("expirationDate") or []
+    if not isinstance(exp_dates, list):
+        exp_dates = []
     cdm_exp = None
     if exp_dates:
-        cdm_exp = (exp_dates[0].get("adjustableDate") or {}).get("unadjustedDate")
+        cdm_exp = _dget(_safe_list_get(exp_dates, 0, {}), "adjustableDate", "unadjustedDate")
     check(cdm_exp == model.expiryDate, "Expiry date mismatch", "trade.product.economicTerms.payout[0].OptionPayout.exerciseTerms.expirationDate")
 
     check(op.get("optionType") == model.optionType, "Option type mismatch", "trade.product.economicTerms.payout[0].OptionPayout.optionType")
 
-    sp = (op.get("strike") or {}).get("strikePrice", {})
+    sp = _dget(op, "strike", "strikePrice", default={})
+    if not isinstance(sp, dict):
+        sp = {}
+    sp_val = sp.get("value")
     check(
-        _float_equal(model.strikeRate, float(sp.get("value")) if sp.get("value") is not None else None, 0.0001),
+        _float_equal(model.strikeRate, float(sp_val) if sp_val is not None else None, 0.0001),
         "Strike rate mismatch",
         "trade.product.economicTerms.payout[0].OptionPayout.strike.strikePrice.value",
     )
 
-    bs = op.get("buyerSeller", {})
+    bs = op.get("buyerSeller", {}) if isinstance(op, dict) else {}
+    if not isinstance(bs, dict):
+        bs = {}
     counterparties: Dict[str, str] = {}
-    for cp in trade.get("counterparty", []):
+    for cp in (trade.get("counterparty") or []):
+        if not isinstance(cp, dict):
+            continue
         ref = cp.get("partyReference", {})
+        if not isinstance(ref, dict):
+            continue
         key = ref.get("externalReference") or ref.get("globalReference")
         if key:
             counterparties[key] = cp.get("role", "")
@@ -513,17 +725,23 @@ def _semantic_validation_fx_option(
             "trade.product.economicTerms.payout[0].OptionPayout.buyerSeller.seller",
         )
 
-    pqs = ((trade.get("tradeLot", [{}]) or [{}])[0].get("priceQuantity", []) or [])
+    trade_lot = _safe_list_get(trade.get("tradeLot") if isinstance(trade.get("tradeLot"), list) else [{}], 0, {})
+    pqs = trade_lot.get("priceQuantity", []) if isinstance(trade_lot, dict) else []
+    if not isinstance(pqs, list):
+        pqs = []
     if pqs:
-        qtys = pqs[0].get("quantity", []) or []
+        pq0 = _safe_list_get(pqs, 0, {})
+        qtys = pq0.get("quantity", []) if isinstance(pq0, dict) else []
+        if not isinstance(qtys, list):
+            qtys = []
         if len(qtys) >= 2:
             check(
-                qtys[0].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.putCurrency,
+                _dget(_safe_list_get(qtys, 0, {}), "value", "unit", "currency", "value") == model.putCurrency,
                 "Put currency mismatch",
                 "trade.tradeLot[0].priceQuantity[0].quantity[0]",
             )
             check(
-                qtys[1].get("value", {}).get("unit", {}).get("currency", {}).get("value") == model.callCurrency,
+                _dget(_safe_list_get(qtys, 1, {}), "value", "unit", "currency", "value") == model.callCurrency,
                 "Call currency mismatch",
                 "trade.tradeLot[0].priceQuantity[0].quantity[1]",
             )

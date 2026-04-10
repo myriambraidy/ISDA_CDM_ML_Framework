@@ -15,7 +15,6 @@ CDM_TRADE_KEY_ORDER: List[str] = [
     "tradeIdentifier",
     "tradeDate",
     "party",
-    "partyRole",
     "meta",
 ]
 
